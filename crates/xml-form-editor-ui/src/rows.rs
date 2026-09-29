@@ -45,7 +45,7 @@ pub(crate) struct SectionRow {
     /// Its index when it's an item of a list
     pub index: Option<usize>,
     /// The path its copy button copies: relative to the root element, with the index of each item
-    /// of a list, as in `constraint[0]/fit_settings/weight`. `None` for the root, which has no button.
+    /// of a list, as in `constraint[0].fit_settings.weight`. `None` for the root, which has no button.
     pub copy_path: Option<String>,
     pub doc: Option<String>,
     pub notes: Vec<Note>,
@@ -490,7 +490,7 @@ fn join(path: &str, step: &str) -> String {
     if path.is_empty() {
         step.to_string()
     } else {
-        format!("{path}/{step}")
+        format!("{path}.{step}")
     }
 }
 
@@ -680,12 +680,12 @@ mod tests {
             [
                 None,
                 Some("solver"),
-                Some("solver/n_iter"),
+                Some("solver.n_iter"),
                 Some("constraint[0]"),
-                Some("constraint[0]/@unit"),
-                Some("constraint[0]/weight"),
+                Some("constraint[0].@unit"),
+                Some("constraint[0].weight"),
                 Some("constraint[1]"),
-                Some("constraint[1]/weight"),
+                Some("constraint[1].weight"),
             ]
         );
     }
@@ -726,7 +726,7 @@ mod tests {
         // Until the file shows, the link does, to fix
         assert_eq!(
             paths(&form, ""),
-            [None, Some("numerics".into()), Some("numerics/@href".into())]
+            [None, Some("numerics".into()), Some("numerics.@href".into())]
         );
 
         let NodeKind::Section { children } = &mut form.root.kind else {
@@ -780,9 +780,9 @@ mod tests {
             [
                 None,
                 Some("numerics".into()),
-                Some("numerics/@version".into()),
-                Some("numerics/picard".into()),
-                Some("numerics/picard/n_iter".into()),
+                Some("numerics.@version".into()),
+                Some("numerics.picard".into()),
+                Some("numerics.picard.n_iter".into()),
             ]
         );
         let Row::Section(numerics) = &shown[1] else {
@@ -811,8 +811,8 @@ mod tests {
             [
                 None,
                 Some("numerics".into()),
-                Some("numerics/picard".into()),
-                Some("numerics/picard/n_iter".into()),
+                Some("numerics.picard".into()),
+                Some("numerics.picard.n_iter".into()),
             ]
         );
         assert_eq!(
@@ -820,7 +820,7 @@ mod tests {
             [
                 None,
                 Some("numerics".into()),
-                Some("numerics/@version".into())
+                Some("numerics.@version".into())
             ]
         );
 
@@ -829,7 +829,7 @@ mod tests {
             panic!("the root holds elements");
         };
         children[0].attributes[0].warning = Some("Not in the schema".into());
-        assert!(paths(&form, "").contains(&Some("numerics/@href".into())));
+        assert!(paths(&form, "").contains(&Some("numerics.@href".into())));
     }
 
     fn numerics_values(xml: &str) -> Shared<Values> {

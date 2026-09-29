@@ -6,7 +6,7 @@ members = ["crates/xml-form-editor-core", "crates/xml-form-editor-ui"]
 default-members = ["crates/xml-form-editor-core"]
 
 [workspace.package]
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
 rust-version = "1.88"
 publish = false

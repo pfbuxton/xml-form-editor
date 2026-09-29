@@ -16,5 +16,5 @@ serde = { version = "1", features = ["derive"] }
 serde-wasm-bindgen = "0.6"
 # Must match the version of wasm-bindgen-cli that `npm run build:webview` runs.
 wasm-bindgen = "=0.2.129"
-web-sys = { version = "0.3", features = ["Document", "Element", "EventTarget", "HtmlInputElement", "KeyboardEvent", "MessageEvent", "Window", "console"] }
+web-sys = { version = "0.3", features = ["Document", "Element", "EventTarget", "FocusEvent", "HtmlInputElement", "HtmlTableElement", "KeyboardEvent", "MessageEvent", "Node", "Window", "console"] }
 xml-form-editor-core = { path = "../xml-form-editor-core" }

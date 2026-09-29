@@ -11,8 +11,8 @@ mod xml;
 
 pub use edit::{EditError, EditOp, TextEdit, apply_edit};
 pub use form::{
-    AttributeField, Field, Form, FormNode, Linked, NodeKind, Note, Problems, Severity, Variant,
-    build_form, values,
+    AttributeField, Field, Form, FormNode, Linked, Matrix, NodeKind, Note, Problems, Severity,
+    Variant, build_form, values,
 };
 pub use schema::{Schema, SchemaError};
 pub use simple::{Bound, Builtin, EnumValue, SimpleInfo};

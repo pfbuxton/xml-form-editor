@@ -11,6 +11,10 @@ element with `xsi:noNamespaceSchemaLocation` or `xsi:schemaLocation`.
 ## Features
 
 - Dropdowns for enumerations, and checkboxes for booleans.
+- Matrices show as a grid, like a spreadsheet, with their rows and columns numbered. A matrix is an
+  element that the schema lets hold one repeating element of a list of numbers, one per row, such
+  as `<row>0.0 1.0</row>`. Enter and the arrow keys move between the cells. The + buttons add a row
+  or a column, and hovering a row or column number shows a button that removes it.
 - Values are checked as you type, and invalid values are never written.
 - Every setting shows its documentation and units from the schema.
 - Changed values are marked green until you save, then blue.
@@ -29,8 +33,9 @@ the file in the Explorer and choose **Open in Form Editor**. Save with Ctrl+S.
 
 ## Limitations
 
-- The form never adds or removes elements, or changes which file an element links to. To do that,
-  edit the text: **Open XML** in the toolbar opens it beside the form.
+- The form never adds or removes elements, other than the rows of a matrix, or changes which file
+  an element links to. To do that, edit the text: **Open XML** in the toolbar opens it beside the
+  form.
 - The schema must be a local file, and `xs:include`, `xs:import` and `xs:redefine` aren't supported.
 - Undo in the form undoes changes to the file you opened. Changes to a linked file are undone in
   that file's text editor.

@@ -6,12 +6,12 @@ members = ["crates/xml-form-editor-core", "crates/xml-form-editor-ui"]
 default-members = ["crates/xml-form-editor-core"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 rust-version = "1.88"
 publish = false
 
-# Release builds are the webview's WebAssembly, which these keep small (about 580 KB)
+# Release builds are the webview's WebAssembly, which these keep small (about 790 KB)
 [profile.release]
 opt-level = "z"
 lto = true

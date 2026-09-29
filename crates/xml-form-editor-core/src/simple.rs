@@ -589,6 +589,31 @@ impl SimpleInfo {
         Ok(())
     }
 
+    /// A value to start new places with, such as the cells of a new matrix row: zero, when the type
+    /// allows it, else the first of a few simple values that it does, or its first enumerated
+    /// value. `None` when it allows none of them, as for text that isn't an enumeration.
+    pub fn default_value(&self) -> Option<String> {
+        let simple: &[&str] = if self.builtin.integer_range().is_some() {
+            &["0", "1", "-1"]
+        } else if self.builtin.is_numeric() {
+            &["0.0", "1.0", "-1.0"]
+        } else if self.builtin == Builtin::Boolean {
+            &["false", "true"]
+        } else {
+            &[]
+        };
+        let bounds = [&self.min, &self.max]
+            .into_iter()
+            .flatten()
+            .map(|bound| bound.value.clone());
+        simple
+            .iter()
+            .map(|value| value.to_string())
+            .chain(self.enumeration.iter().map(|e| e.value.clone()))
+            .chain(bounds)
+            .find(|value| self.validate(value).is_ok())
+    }
+
     /// A short description of the type, such as `nonNegativeInteger`, `PositiveDouble: double > 0`
     /// or `DoubleList: list of double`.
     pub fn summary(&self) -> String {
@@ -730,6 +755,33 @@ mod tests {
         assert!(boolean.is_boolean());
         assert!(boolean.validate(" true ").is_ok());
         assert!(boolean.validate("yes").is_err());
+    }
+
+    #[test]
+    fn default_values() {
+        assert_eq!(
+            builtin(Builtin::Double).default_value().as_deref(),
+            Some("0.0")
+        );
+        assert_eq!(builtin(Builtin::Int).default_value().as_deref(), Some("0"));
+        assert_eq!(
+            builtin(Builtin::PositiveInteger).default_value().as_deref(),
+            Some("1")
+        );
+        let mut above_two = builtin(Builtin::Double);
+        above_two.restrict(&Facets {
+            min: Some(Bound {
+                value: "2.5".into(),
+                inclusive: true,
+            }),
+            ..Facets::default()
+        });
+        assert_eq!(above_two.default_value().as_deref(), Some("2.5"));
+        assert_eq!(
+            builtin(Builtin::Boolean).default_value().as_deref(),
+            Some("false")
+        );
+        assert_eq!(builtin(Builtin::String).default_value(), None);
     }
 
     #[test]

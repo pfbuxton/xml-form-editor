@@ -11,7 +11,9 @@ use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::Arc;
 
-use xml_form_editor_core::{AttributeField, Field, Form, FormNode, NodeKind, Note, Path, Variant};
+use xml_form_editor_core::{
+    AttributeField, Field, Form, FormNode, Matrix, NodeKind, Note, Path, Variant,
+};
 
 use crate::Shared;
 
@@ -20,6 +22,7 @@ pub(crate) enum Row {
     Section(SectionRow),
     Value(ValueRow),
     Attribute(AttributeRow),
+    Matrix(MatrixRow),
 }
 
 /// Where a row's element is.
@@ -96,6 +99,43 @@ pub(crate) struct AttributeRow {
     pub change: Change,
 }
 
+/// A section holding a matrix, shown as a grid of its values (see [`Matrix`]).
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct MatrixRow {
+    pub place: Place,
+    pub depth: usize,
+    pub name: String,
+    pub index: Option<usize>,
+    pub copy_path: Option<String>,
+    pub doc: Option<String>,
+    pub notes: Vec<Note>,
+    pub variant: Variant,
+    pub unused: bool,
+    pub offset: u32,
+    pub units: Option<String>,
+    pub matrix: Matrix,
+    pub lines: Vec<MatrixLine>,
+}
+
+/// A row of a matrix.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct MatrixLine {
+    /// The row's element
+    pub path: Path,
+    pub values: Vec<String>,
+    /// Why the row isn't valid
+    pub error: Option<String>,
+    /// How each value changed
+    pub changes: Vec<Change>,
+}
+
+impl MatrixRow {
+    /// The number of columns: the length of the longest row.
+    pub(crate) fn columns(&self) -> usize {
+        self.lines.iter().map(|l| l.values.len()).max().unwrap_or(0)
+    }
+}
+
 /// How a value differs from the saved file, and from the file as it was when the form opened.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum Change {
@@ -118,18 +158,59 @@ impl Change {
             _ => Change::None,
         }
     }
+
+    /// How each of the `values` of the list at `key` in a document changed: compared with the
+    /// value in the same place in the list, in each version.
+    fn of_values(key: &str, values: &[String], versions: Option<&Versions>) -> Vec<Change> {
+        // A version's list; empty when that version doesn't have it, or it's nil
+        let list = |values: &Option<Shared<Values>>| {
+            values.as_ref().map(|v| {
+                v.get(key)
+                    .cloned()
+                    .flatten()
+                    .unwrap_or_default()
+                    .split_whitespace()
+                    .map(str::to_string)
+                    .collect::<Vec<_>>()
+            })
+        };
+        let (saved, original) = match versions {
+            Some(versions) => (list(&versions.saved), list(&versions.original)),
+            None => (None, None),
+        };
+        let differs = |old: &Option<Vec<String>>, i: usize, value: &String| {
+            old.as_ref().is_some_and(|old| old.get(i) != Some(value))
+        };
+        values
+            .iter()
+            .enumerate()
+            .map(|(i, value)| {
+                if differs(&saved, i, value) {
+                    Change::Unsaved
+                } else if differs(&original, i, value) {
+                    Change::Saved
+                } else {
+                    Change::None
+                }
+            })
+            .collect()
+    }
 }
 
 impl Row {
     /// Identifies the row for keyed rendering: its key, and a hash of everything it shows.
+    ///
+    /// A matrix's key leaves out what it shows, so that its grid stays in place as its values
+    /// change, and the cell being edited keeps its focus. The grid follows the changes itself.
     pub(crate) fn key(&self) -> String {
-        let mut hasher = DefaultHasher::new();
-        self.hash(&mut hasher);
         let key = match self {
             Row::Section(row) => row.place.key.clone(),
             Row::Value(row) => row.place.key.clone(),
             Row::Attribute(row) => format!("{}/@{}", row.place.key, row.attribute.name),
+            Row::Matrix(row) => return format!("{}#matrix", row.place.key),
         };
+        let mut hasher = DefaultHasher::new();
+        self.hash(&mut hasher);
         format!("{key}#{:016x}", hasher.finish())
     }
 }
@@ -221,6 +302,26 @@ fn walk(
         copy_path: copy_path.as_deref().unwrap_or_default(),
         ..above
     };
+    if let (NodeKind::Section { children }, Some(matrix)) = (&node.kind, &node.matrix) {
+        out.push(Row::Matrix(MatrixRow {
+            place,
+            depth,
+            name: node.name.clone(),
+            index: node.index,
+            copy_path: copy_path.clone(),
+            doc: node.doc.clone(),
+            notes: node.notes.clone(),
+            variant: node.variant.clone(),
+            unused,
+            offset: node.offset,
+            units: node.units.clone(),
+            matrix: matrix.clone(),
+            lines: matrix_lines(children, folding.versions.get(above.document)),
+        }));
+        // Its attributes follow, as a value's do
+        push_attributes(node, depth + 1, inner, filter, folding, out);
+        return;
+    }
     match &node.kind {
         NodeKind::Section { children } => {
             // A linked file starts folded, so that a file linking to many reads as a list of them
@@ -287,6 +388,27 @@ fn walk(
             walk_contents(node, depth + 1, inner, filter, folding, out);
         }
     }
+}
+
+/// The rows of a matrix, from its elements.
+fn matrix_lines(rows: &[FormNode], versions: Option<&Versions>) -> Vec<MatrixLine> {
+    rows.iter()
+        .map(|row| {
+            let (values, error) = match &row.kind {
+                NodeKind::Value(field) => (
+                    field.value.split_whitespace().map(str::to_string).collect(),
+                    field.error.clone(),
+                ),
+                NodeKind::Section { .. } => (Vec::new(), None),
+            };
+            MatrixLine {
+                changes: Change::of_values(&row.path.to_string(), &values, versions),
+                path: row.path.clone(),
+                values,
+                error,
+            }
+        })
+        .collect()
 }
 
 /// The rows of what an element holds: its attributes and elements, then the contents of the file
@@ -514,6 +636,7 @@ mod tests {
                 Row::Section(row) => row.copy_path.as_deref(),
                 Row::Value(row) => row.copy_path.as_deref(),
                 Row::Attribute(row) => Some(row.copy_path.as_str()),
+                Row::Matrix(row) => row.copy_path.as_deref(),
             })
             .collect()
     }
@@ -630,6 +753,7 @@ mod tests {
                     &*row.place.document,
                     format!("{}/@{}", row.place.key, row.attribute.name),
                 ),
+                Row::Matrix(row) => (&*row.place.document, row.place.key.clone()),
             })
             .collect();
         assert_eq!(
@@ -710,5 +834,63 @@ mod tests {
 
     fn numerics_values(xml: &str) -> Shared<Values> {
         Shared(Arc::new(xml_form_editor_core::values(xml).unwrap()))
+    }
+
+    #[test]
+    fn a_matrix_is_one_row_marking_each_value_that_changed() {
+        let xsd = r#"<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+            <xs:simpleType name="DoubleList"><xs:list itemType="xs:double"/></xs:simpleType>
+            <xs:element name="r">
+                <xs:complexType>
+                    <xs:sequence>
+                        <xs:element name="m">
+                            <xs:complexType>
+                                <xs:sequence>
+                                    <xs:element name="row" type="DoubleList" maxOccurs="unbounded"/>
+                                </xs:sequence>
+                            </xs:complexType>
+                        </xs:element>
+                        <xs:element name="n" type="xs:int"/>
+                    </xs:sequence>
+                </xs:complexType>
+            </xs:element>
+        </xs:schema>"#;
+        let saved = "<r><m><row>1 2</row><row>3 4</row></m><n>1</n></r>";
+        let xml = "<r><m><row>1   5</row><row>3 4</row><row>0 0</row></m><n>1</n></r>";
+        let schema = Schema::parse(xsd).unwrap();
+        let form = build_form(xml, Some(&schema)).unwrap();
+        let versions = HashMap::from([(
+            Arc::from("main"),
+            Versions {
+                saved: Some(numerics_values(saved)),
+                original: None,
+            },
+        )]);
+        let expanded = HashMap::new();
+        let shown = rows(&form, &"main".into(), &folded(&expanded, &versions));
+        assert_eq!(copy_paths(&shown), [None, Some("m"), Some("n")]);
+        let Row::Matrix(m) = &shown[1] else {
+            panic!("m is a matrix");
+        };
+        let lines: Vec<(Vec<&str>, &[Change])> = m
+            .lines
+            .iter()
+            .map(|l| (l.values.iter().map(String::as_str).collect(), &*l.changes))
+            .collect();
+        use Change::{None as Same, Unsaved};
+        assert_eq!(
+            lines,
+            [
+                (vec!["1", "5"], &[Same, Unsaved][..]),
+                (vec!["3", "4"], &[Same, Same][..]),
+                (vec!["0", "0"], &[Unsaved, Unsaved][..]),
+            ]
+        );
+        assert_eq!(m.columns(), 2);
+        // Its key stays as its values change, so that its grid stays in place
+        let edited = build_form(&xml.replace("5", "6"), Some(&schema)).unwrap();
+        let again = rows(&edited, &"main".into(), &folded(&expanded, &versions));
+        assert_eq!(shown[1].key(), again[1].key());
+        assert_ne!(shown[1], again[1]);
     }
 }

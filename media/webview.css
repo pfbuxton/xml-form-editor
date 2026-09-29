@@ -5,6 +5,10 @@
   --indent: 20px;
   --gutter: 20px;
   --border: var(--vscode-widget-border, var(--vscode-panel-border, rgba(128, 128, 128, 0.35)));
+  /* A matrix's grid, drawn like a spreadsheet's */
+  --grid-line: var(--vscode-input-border, rgba(128, 128, 128, 0.35));
+  --grid-header: var(--vscode-keybindingTable-headerBackground, rgba(128, 128, 128, 0.12));
+  --grid-header-active: var(--vscode-list-inactiveSelectionBackground, rgba(128, 128, 128, 0.28));
 }
 
 html,
@@ -457,7 +461,219 @@ a:hover {
   color: var(--vscode-errorForeground, #f85149);
 }
 
+/* A matrix: a grid of its values, like a spreadsheet's, with its rows and columns numbered */
+
+.shape {
+  color: var(--vscode-descriptionForeground, #9d9d9d);
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 0.92em;
+  white-space: nowrap;
+}
+
+/* A wide matrix scrolls sideways, rather than the page, with its row numbers kept in view */
+.grid-scroll {
+  max-width: 100%;
+  margin-top: 6px;
+  overflow-x: auto;
+}
+
+/* Hidden while there are no rows, rather than rebuilt when the first comes */
+.grid-scroll.hidden {
+  display: none;
+}
+
+/* The table, with the button that adds a column beside its column numbers */
+.grid-frame {
+  position: relative;
+  display: inline-block;
+  vertical-align: top;
+}
+
+.grid-frame .add-column {
+  position: absolute;
+  top: 0;
+  left: 100%;
+  padding-left: 4px;
+}
+
+.add-row {
+  padding-top: 2px;
+}
+
+/* Each cell draws its right and bottom lines, so that the row numbers, which stay in view as the
+   grid scrolls, keep theirs */
+.grid {
+  border-collapse: separate;
+  border-spacing: 0;
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: var(--vscode-editor-font-size, 13px);
+}
+
+.grid th,
+.grid td {
+  padding: 0;
+  border-right: 1px solid var(--grid-line);
+  border-bottom: 1px solid var(--grid-line);
+}
+
+.grid thead th {
+  border-top: 1px solid var(--grid-line);
+}
+
+.grid tr > :first-child {
+  border-left: 1px solid var(--grid-line);
+}
+
+/* The row and column numbers. Those of the rows stay in view, over the cells scrolling past, so
+   their background is solid. */
+.grid th.index,
+.grid .corner {
+  background: var(--grid-header);
+}
+
+.grid tbody th.index,
+.grid .corner {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  background: linear-gradient(var(--grid-header), var(--grid-header)),
+    var(--vscode-editor-background, #1f1f1f);
+}
+
+.grid th.index {
+  position: relative;
+  height: 22px;
+  padding: 0 6px;
+  color: var(--vscode-descriptionForeground, #9d9d9d);
+  font-size: 0.85em;
+  font-weight: normal;
+  text-align: center;
+  user-select: none;
+}
+
+.grid tbody th.index {
+  min-width: 38px;
+  padding-right: 8px;
+  text-align: right;
+}
+
+/* The numbers of the focused cell's row and column, marked as a spreadsheet marks them */
+.grid th.index.active {
+  background: linear-gradient(var(--grid-header-active), var(--grid-header-active)),
+    var(--vscode-editor-background, #1f1f1f);
+  color: var(--vscode-foreground, #cccccc);
+}
+
+.grid thead th.index.active {
+  box-shadow: inset 0 -2px 0 var(--vscode-focusBorder, #0078d4);
+}
+
+.grid tbody th.index.active {
+  box-shadow: inset -2px 0 0 var(--vscode-focusBorder, #0078d4);
+}
+
+.grid td input {
+  box-sizing: border-box;
+  display: block;
+  height: 24px;
+  padding: 0 6px;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  color: var(--vscode-input-foreground, #cccccc);
+  font: inherit;
+  /* Numbers, lined up by their last digit */
+  text-align: right;
+}
+
+.grid td input:focus {
+  outline: 2px solid var(--vscode-focusBorder, #0078d4);
+  outline-offset: -2px;
+}
+
+.grid td.unsaved input,
+.grid td.saved input {
+  box-shadow: inset 0 0 0 1px var(--change);
+}
+
+.grid td.invalid input {
+  background: var(--vscode-inputValidation-errorBackground, rgba(190, 17, 0, 0.15));
+  box-shadow: inset 0 0 0 1px var(--vscode-inputValidation-errorBorder, #be1100);
+}
+
+/* Past the end of a row that's shorter than the others */
+.grid td.missing {
+  background: repeating-linear-gradient(-45deg, transparent 0 4px, var(--grid-line) 4px 5px);
+}
+
+/* The buttons that add a row and a column, outside the grid */
+.grid-scroll .icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: 3px;
+  background: none;
+  color: var(--vscode-descriptionForeground, #9d9d9d);
+  vertical-align: middle;
+}
+
+.grid-scroll .icon-button:hover {
+  background: var(--vscode-toolbar-hoverBackground, rgba(90, 93, 94, 0.31));
+  color: var(--vscode-foreground, #cccccc);
+}
+
+.grid-scroll .icon-button:disabled,
+.grid-scroll .icon-button:disabled:hover {
+  background: none;
+  opacity: 0.4;
+}
+
+/* The button that removes a row or column shows when its number is hovered */
+.grid th.index .remove {
+  position: absolute;
+  top: 50%;
+  display: none;
+  width: 14px;
+  height: 14px;
+  transform: translateY(-50%);
+}
+
+.grid thead th.index .remove {
+  right: 1px;
+}
+
+.grid tbody th.index .remove {
+  left: 1px;
+}
+
+.grid th.index:hover .remove:enabled {
+  display: inline-flex;
+}
+
+.grid th.index .remove:hover {
+  color: var(--vscode-errorForeground, #f85149);
+}
+
+.grid .remove .icon {
+  width: 12px;
+  height: 12px;
+  stroke-width: 1.5;
+}
+
 .note.warning {
   margin-top: 4px;
   color: var(--vscode-editorWarning-foreground, #cca700);
+}
+
+/* In place of an empty matrix's grid */
+.add-first {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 6px;
+  padding: 2px 10px 2px 6px;
 }

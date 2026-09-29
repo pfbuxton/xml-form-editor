@@ -4,6 +4,7 @@
 
 mod bridge;
 mod fields;
+mod matrix;
 mod rows;
 
 use std::collections::{HashMap, VecDeque};
@@ -376,6 +377,8 @@ pub(crate) struct Ctx {
     pub(crate) expanded: RwSignal<HashMap<String, bool>>,
     failure: RwSignal<Option<String>>,
     queue: StoredValue<EditQueue>,
+    /// The rows the page shows, which a matrix's grid follows (see [`Row::key`])
+    pub(crate) rows: Memo<Vec<Row>>,
 }
 
 impl Ctx {
@@ -411,7 +414,7 @@ impl Ctx {
             let Some(xml) = xml else {
                 self.failure.set(Some(format!(
                     "Could not change {}: {} is not open",
-                    op_path(&pending.op),
+                    pending.op.path(),
                     file_name(&pending.document)
                 )));
                 continue;
@@ -468,7 +471,7 @@ impl Ctx {
             let reason = error.unwrap_or_else(|| "the document kept changing".to_string());
             self.failure.set(Some(format!(
                 "Could not change {} in {}: {reason}",
-                op_path(&edit.op),
+                edit.op.path(),
                 file_name(&edit.document)
             )));
         }
@@ -484,14 +487,6 @@ impl Ctx {
 
     pub(crate) fn copy(&self, text: String) {
         bridge::post(&Out::Copy { text });
-    }
-}
-
-fn op_path(op: &EditOp) -> String {
-    match op {
-        EditOp::SetValue { path, .. }
-        | EditOp::SetNil { path }
-        | EditOp::SetAttribute { path, .. } => path.to_string(),
     }
 }
 
@@ -512,75 +507,6 @@ fn App() -> impl IntoView {
     let hide_unused = RwSignal::new(false);
     let failure = RwSignal::new(None::<String>);
     let queue = StoredValue::new(EditQueue::default());
-    let ctx = Ctx {
-        docs,
-        expanded,
-        failure,
-        queue,
-    };
-
-    bridge::on_message(move |message| {
-        let In {
-            kind,
-            uri,
-            main: is_main,
-            document,
-            text,
-            version,
-            dirty,
-            id,
-            applied,
-            location,
-            href,
-            path,
-            error,
-        } = message;
-        match kind.as_str() {
-            "document" => {
-                let (Some(uri), Some(text), Some(version)) = (uri, text, version) else {
-                    return;
-                };
-                let doc = doc(docs, &owner, &uri);
-                if is_main == Some(true) && main.with_untracked(|m| m.as_deref() != Some(&*uri)) {
-                    main.set(Some(uri.into()));
-                }
-                if doc.receive(text, version, dirty.unwrap_or(false)) {
-                    failure.set(None);
-                }
-            }
-            "saved" => {
-                if let (Some(uri), Some(text)) = (uri, text) {
-                    doc(docs, &owner, &uri).mark_saved(text.into());
-                }
-            }
-            "editDone" => {
-                if let Some(id) = id {
-                    ctx.edit_done(id as u32, applied.unwrap_or(false), error);
-                }
-            }
-            "schema" => {
-                if let (Some(document), Some(location)) = (document, location) {
-                    doc(docs, &owner, &document).receive_schema(location, path, text, error);
-                }
-            }
-            "link" => {
-                let (Some(document), Some(href)) = (document, href) else {
-                    return;
-                };
-                let state = match (uri, error) {
-                    (Some(uri), _) => LinkState::Open(uri.into()),
-                    (None, error) => {
-                        LinkState::Failed(error.unwrap_or_else(|| format!("Could not open {href}")))
-                    }
-                };
-                links.update(|links| {
-                    links.insert((document.into(), href), state);
-                });
-            }
-            _ => {}
-        }
-    });
-
     let main_doc = move || {
         let uri = main.get()?;
         docs.with(|docs| docs.get(&uri).copied())
@@ -654,6 +580,76 @@ fn App() -> impl IntoView {
                 )
             })
         })
+    });
+
+    let ctx = Ctx {
+        docs,
+        expanded,
+        failure,
+        queue,
+        rows,
+    };
+
+    bridge::on_message(move |message| {
+        let In {
+            kind,
+            uri,
+            main: is_main,
+            document,
+            text,
+            version,
+            dirty,
+            id,
+            applied,
+            location,
+            href,
+            path,
+            error,
+        } = message;
+        match kind.as_str() {
+            "document" => {
+                let (Some(uri), Some(text), Some(version)) = (uri, text, version) else {
+                    return;
+                };
+                let doc = doc(docs, &owner, &uri);
+                if is_main == Some(true) && main.with_untracked(|m| m.as_deref() != Some(&*uri)) {
+                    main.set(Some(uri.into()));
+                }
+                if doc.receive(text, version, dirty.unwrap_or(false)) {
+                    failure.set(None);
+                }
+            }
+            "saved" => {
+                if let (Some(uri), Some(text)) = (uri, text) {
+                    doc(docs, &owner, &uri).mark_saved(text.into());
+                }
+            }
+            "editDone" => {
+                if let Some(id) = id {
+                    ctx.edit_done(id as u32, applied.unwrap_or(false), error);
+                }
+            }
+            "schema" => {
+                if let (Some(document), Some(location)) = (document, location) {
+                    doc(docs, &owner, &document).receive_schema(location, path, text, error);
+                }
+            }
+            "link" => {
+                let (Some(document), Some(href)) = (document, href) else {
+                    return;
+                };
+                let state = match (uri, error) {
+                    (Some(uri), _) => LinkState::Open(uri.into()),
+                    (None, error) => {
+                        LinkState::Failed(error.unwrap_or_else(|| format!("Could not open {href}")))
+                    }
+                };
+                links.update(|links| {
+                    links.insert((document.into(), href), state);
+                });
+            }
+            _ => {}
+        }
     });
 
     let problems = Memo::new(move |_| {

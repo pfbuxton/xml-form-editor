@@ -1,0 +1,86 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      # Must match the wasm-bindgen crate in crates/xml-form-editor-ui/Cargo.toml
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-bindgen@0.2.129
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+
+      - run: cargo fmt --all --check
+      - run: cargo clippy -p xml-form-editor-core --all-targets -- -D warnings
+      - run: cargo clippy -p xml-form-editor-ui --target wasm32-unknown-unknown -- -D warnings
+      - run: npm test
+
+      # vscode:prepublish type-checks the TypeScript and builds dist/ first
+      - run: npm run package
+      - uses: actions/upload-artifact@v7
+        with:
+          name: vsix
+          path: "*.vsix"
+          if-no-files-found: error
+
+  # Pushing a tag such as v0.1.0 publishes that build to the Marketplace. It signs in with
+  # Microsoft Entra ID rather than a personal access token, as an Azure managed identity with a
+  # federated credential for this repository's `marketplace` environment. The repository
+  # variables AZURE_CLIENT_ID and AZURE_TENANT_ID name the identity, and the identity must be a
+  # Contributor to the pfbuxton publisher.
+  publish:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    environment: marketplace
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+
+      - name: Check the tag matches the version in package.json
+        run: test "${GITHUB_REF_NAME#v}" = "$(node -p 'require("./package.json").version')"
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: vsix
+
+      - uses: azure/login@v3
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          allow-no-subscriptions: true
+      - run: npx vsce publish --azure-credential --packagePath *.vsix
+
+      # The Marketplace knows the identity by this ID, which is what to add to the publisher
+      - name: Show the identity's Marketplace ID
+        if: failure()
+        run: az rest -u https://app.vssps.visualstudio.com/_apis/profile/profiles/me --resource 499b84ac-1321-427f-aa17-267ca6975798 --query id -o tsv

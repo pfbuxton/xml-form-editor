@@ -1,0 +1,463 @@
+/* The form editor's styles. Colours come from VS Code's theme variables, so the form follows
+   the current theme; each has a fallback for viewing the page outside VS Code. */
+
+:root {
+  --indent: 20px;
+  --gutter: 20px;
+  --border: var(--vscode-widget-border, var(--vscode-panel-border, rgba(128, 128, 128, 0.35)));
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background: var(--vscode-editor-background, #1f1f1f);
+  color: var(--vscode-foreground, #cccccc);
+  font-family: var(--vscode-font-family, system-ui, sans-serif);
+  font-size: var(--vscode-font-size, 13px);
+  line-height: 1.45;
+}
+
+button,
+input,
+select {
+  font: inherit;
+}
+
+code {
+  font-family: var(--vscode-editor-font-family, monospace);
+}
+
+/* Toolbar */
+
+.toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 10px;
+  padding: 10px var(--gutter);
+  background: var(--vscode-editor-background, #1f1f1f);
+  border-bottom: 1px solid var(--border);
+}
+
+.toolbar .filter {
+  flex: 1 1 220px;
+  min-width: 140px;
+  max-width: 420px;
+}
+
+.toolbar .toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  user-select: none;
+}
+
+.toolbar .spacer {
+  flex: 1 1 0;
+}
+
+button {
+  padding: 3px 10px;
+  border: 1px solid var(--vscode-button-border, transparent);
+  border-radius: 2px;
+  background: var(--vscode-button-secondaryBackground, #313131);
+  color: var(--vscode-button-secondaryForeground, #cccccc);
+  cursor: pointer;
+}
+
+button:hover {
+  background: var(--vscode-button-secondaryHoverBackground, #3c3c3c);
+}
+
+button.save {
+  background: var(--vscode-button-background, #0078d4);
+  color: var(--vscode-button-foreground, #ffffff);
+}
+
+button.save:hover {
+  background: var(--vscode-button-hoverBackground, #026ec1);
+}
+
+button:disabled,
+button:disabled:hover {
+  background: var(--vscode-button-secondaryBackground, #313131);
+  color: var(--vscode-disabledForeground, #8c8c8c);
+  opacity: 0.6;
+  cursor: default;
+}
+
+button.problems {
+  background: transparent;
+  border-color: var(--vscode-errorForeground, #f85149);
+  color: var(--vscode-errorForeground, #f85149);
+}
+
+:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder, #0078d4);
+  outline-offset: -1px;
+}
+
+/* Controls */
+
+input[type="text"],
+input[type="search"],
+select {
+  box-sizing: border-box;
+  height: 26px;
+  padding: 2px 6px;
+  border: 1px solid var(--vscode-input-border, var(--border));
+  border-radius: 2px;
+  background: var(--vscode-input-background, #313131);
+  color: var(--vscode-input-foreground, #cccccc);
+}
+
+select {
+  border-color: var(--vscode-dropdown-border, var(--border));
+  background: var(--vscode-dropdown-background, #313131);
+  color: var(--vscode-dropdown-foreground, #cccccc);
+}
+
+input:focus,
+select:focus {
+  outline: 1px solid var(--vscode-focusBorder, #0078d4);
+  outline-offset: -1px;
+}
+
+input:disabled,
+select:disabled {
+  opacity: 0.6;
+}
+
+input::placeholder {
+  color: var(--vscode-input-placeholderForeground, #989898);
+}
+
+input[type="checkbox"] {
+  margin: 0;
+  accent-color: var(--vscode-checkbox-selectBackground, var(--vscode-focusBorder, #0078d4));
+}
+
+.control {
+  width: 100%;
+  max-width: 420px;
+}
+
+/* Changed values: green until the file is saved, then blue. The colours are the editor gutter's
+   for added and modified lines. */
+.unsaved {
+  --change: var(--vscode-editorGutter-addedBackground, #2ea043);
+}
+
+.saved {
+  --change: var(--vscode-editorGutter-modifiedBackground, #0078d4);
+}
+
+.control.unsaved,
+.control.saved,
+.checkbox.unsaved,
+.checkbox.saved {
+  border-color: var(--change);
+  box-shadow: 0 0 0 1px var(--change);
+}
+
+.control.invalid {
+  border-color: var(--vscode-inputValidation-errorBorder, #be1100);
+  box-shadow: none;
+}
+
+.units {
+  color: var(--vscode-descriptionForeground, #9d9d9d);
+  font-family: var(--vscode-editor-font-family, monospace);
+  white-space: nowrap;
+}
+
+.control-line {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 6px;
+}
+
+.checkbox,
+.nil {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  user-select: none;
+  white-space: nowrap;
+}
+
+.checkbox {
+  padding: 2px 8px 2px 6px;
+  border: 1px solid transparent;
+  border-radius: 2px;
+}
+
+.nil {
+  color: var(--vscode-descriptionForeground, #9d9d9d);
+}
+
+/* Banners and status */
+
+.status,
+.banner {
+  margin: 10px var(--gutter) 0;
+}
+
+.status {
+  color: var(--vscode-descriptionForeground, #9d9d9d);
+}
+
+.banner {
+  padding: 8px 12px;
+  border-left: 3px solid var(--vscode-textLink-foreground, #4daafc);
+  background: var(--vscode-textBlockQuote-background, rgba(128, 128, 128, 0.1));
+}
+
+.banner.error {
+  border-left-color: var(--vscode-errorForeground, #f85149);
+}
+
+.banner.warning {
+  border-left-color: var(--vscode-editorWarning-foreground, #cca700);
+}
+
+a {
+  color: var(--vscode-textLink-foreground, #4daafc);
+  text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
+}
+
+/* Rows */
+
+.rows {
+  max-width: 980px;
+  padding: 6px 0 48px;
+}
+
+.row {
+  padding: 8px var(--gutter) 10px;
+  border-left: 2px solid transparent;
+  scroll-margin-top: 64px;
+}
+
+.row:hover {
+  background: var(--vscode-settings-rowHoverBackground, rgba(128, 128, 128, 0.07));
+}
+
+.row:focus-within {
+  background: var(--vscode-settings-focusedRowBackground, rgba(128, 128, 128, 0.1));
+  border-left-color: var(--vscode-focusBorder, #0078d4);
+}
+
+.row.section {
+  margin-top: 10px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.row.section.depth-0 {
+  margin-top: 0;
+  border-top: none;
+}
+
+.row.unused {
+  opacity: 0.6;
+}
+
+.depth-1 { padding-left: calc(var(--gutter) + 1 * var(--indent)); }
+.depth-2 { padding-left: calc(var(--gutter) + 2 * var(--indent)); }
+.depth-3 { padding-left: calc(var(--gutter) + 3 * var(--indent)); }
+.depth-4 { padding-left: calc(var(--gutter) + 4 * var(--indent)); }
+.depth-5 { padding-left: calc(var(--gutter) + 5 * var(--indent)); }
+.depth-6 { padding-left: calc(var(--gutter) + 6 * var(--indent)); }
+.depth-7 { padding-left: calc(var(--gutter) + 7 * var(--indent)); }
+.depth-8 { padding-left: calc(var(--gutter) + 8 * var(--indent)); }
+.depth-9 { padding-left: calc(var(--gutter) + 9 * var(--indent)); }
+.depth-10 { padding-left: calc(var(--gutter) + 10 * var(--indent)); }
+.depth-11 { padding-left: calc(var(--gutter) + 11 * var(--indent)); }
+.depth-12 { padding-left: calc(var(--gutter) + 12 * var(--indent)); }
+
+.title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+}
+
+.name {
+  font-weight: 600;
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+
+.name:hover {
+  text-decoration: underline;
+}
+
+.section .name {
+  color: var(--vscode-settings-headerForeground, #e7e7e7);
+  font-size: 1.15em;
+}
+
+.section.depth-0 .name {
+  font-size: 1.35em;
+}
+
+.twisty {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  align-self: center;
+  width: 20px;
+  height: 20px;
+  margin-left: -26px;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--vscode-descriptionForeground, #9d9d9d);
+}
+
+.twisty:hover {
+  background: none;
+  color: var(--vscode-foreground, #cccccc);
+}
+
+.chevron {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.twisty.open .chevron {
+  transform: rotate(90deg);
+}
+
+/* The button that copies a row's path, at the right of its title. It's faint until the row is
+   hovered, so that it doesn't compete with the values. */
+.copy {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  align-self: center;
+  width: 22px;
+  height: 22px;
+  margin-left: auto;
+  padding: 0;
+  border: none;
+  border-radius: 3px;
+  background: none;
+  color: var(--vscode-descriptionForeground, #9d9d9d);
+  opacity: 0.45;
+}
+
+.row:hover .copy,
+.copy:focus-visible,
+.copy.copied {
+  opacity: 1;
+}
+
+.copy:hover {
+  background: var(--vscode-toolbar-hoverBackground, rgba(90, 93, 94, 0.31));
+  color: var(--vscode-foreground, #cccccc);
+}
+
+.icon {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.copy .tick,
+.copy.copied .clipboard {
+  display: none;
+}
+
+.copy.copied .tick {
+  display: block;
+}
+
+.type {
+  color: var(--vscode-descriptionForeground, #9d9d9d);
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 0.92em;
+}
+
+/* The file a section's settings come from, when it links to one */
+.file {
+  color: var(--vscode-textLink-foreground, #4daafc);
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 0.92em;
+  cursor: pointer;
+}
+
+.file:hover {
+  text-decoration: underline;
+}
+
+.doc {
+  max-width: 76ch;
+  margin-top: 2px;
+  color: var(--vscode-descriptionForeground, #9d9d9d);
+  white-space: pre-line;
+}
+
+.doc.hint,
+.hint {
+  font-style: italic;
+}
+
+.hint {
+  margin-top: 4px;
+  color: var(--vscode-descriptionForeground, #9d9d9d);
+}
+
+.option-doc {
+  max-width: 76ch;
+  margin-top: 4px;
+  color: var(--vscode-descriptionForeground, #9d9d9d);
+}
+
+.badge {
+  padding: 0 7px;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  font-size: 0.85em;
+  white-space: nowrap;
+}
+
+.badge.used {
+  background: var(--vscode-badge-background, #616161);
+  color: var(--vscode-badge-foreground, #f8f8f8);
+}
+
+.badge.unused {
+  border-color: var(--vscode-descriptionForeground, #9d9d9d);
+  color: var(--vscode-descriptionForeground, #9d9d9d);
+}
+
+.error,
+.note.error {
+  margin-top: 4px;
+  color: var(--vscode-errorForeground, #f85149);
+}
+
+.note.warning {
+  margin-top: 4px;
+  color: var(--vscode-editorWarning-foreground, #cca700);
+}

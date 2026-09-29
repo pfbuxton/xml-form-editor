@@ -1,0 +1,11 @@
+[package]
+name = "xml-form-editor-core"
+description = "Builds an editable form from an XML document and its XSD schema, and turns value edits into minimal text edits"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+regex-lite = "0.1"
+roxmltree = "0.21"

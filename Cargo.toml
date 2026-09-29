@@ -1,0 +1,19 @@
+[workspace]
+resolver = "3"
+members = ["crates/xml-form-editor-core", "crates/xml-form-editor-ui"]
+# The UI only builds for wasm32 (see `npm run build:webview`), so plain `cargo test` and
+# `cargo build` stick to the core.
+default-members = ["crates/xml-form-editor-core"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+publish = false
+
+# Release builds are the webview's WebAssembly, which these keep small (about 580 KB)
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true

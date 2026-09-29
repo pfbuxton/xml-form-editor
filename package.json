@@ -1,0 +1,134 @@
+{
+  "name": "xml-form-editor",
+  "displayName": "XML Form Editor",
+  "description": "Edit the values in an XML file in a form built from its XSD schema: dropdowns for enumerations, checkboxes for booleans, and checking as you type.",
+  "version": "0.1.0",
+  "publisher": "pfbuxton",
+  "license": "BSD-3-Clause",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/pfbuxton/xml-form-editor"
+  },
+  "bugs": {
+    "url": "https://github.com/pfbuxton/xml-form-editor/issues"
+  },
+  "homepage": "https://github.com/pfbuxton/xml-form-editor#readme",
+  "icon": "media/icon.png",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "keywords": [
+    "xml",
+    "xsd",
+    "xml schema",
+    "form",
+    "settings",
+    "configuration"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "customEditors": [
+      {
+        "viewType": "xmlFormEditor.form",
+        "displayName": "XML Form Editor",
+        "selector": [
+          {
+            "filenamePattern": "*.xml"
+          }
+        ],
+        "priority": "option"
+      }
+    ],
+    "commands": [
+      {
+        "command": "xmlFormEditor.openForm",
+        "title": "Open in Form Editor",
+        "category": "XML Form Editor",
+        "icon": "$(preview)"
+      },
+      {
+        "command": "xmlFormEditor.openFormToSide",
+        "title": "Open Form Editor to the Side",
+        "category": "XML Form Editor",
+        "icon": "$(open-preview)"
+      },
+      {
+        "command": "xmlFormEditor.openSource",
+        "title": "Open XML Text to the Side",
+        "category": "XML Form Editor",
+        "icon": "$(go-to-file)"
+      },
+      {
+        "command": "xmlFormEditor.save",
+        "title": "Save the File and the Files It Links To",
+        "category": "XML Form Editor"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "xmlFormEditor.save",
+        "key": "ctrl+s",
+        "mac": "cmd+s",
+        "when": "activeCustomEditorId == xmlFormEditor.form"
+      }
+    ],
+    "menus": {
+      "editor/title": [
+        {
+          "command": "xmlFormEditor.openFormToSide",
+          "when": "resourceExtname == .xml && activeCustomEditorId != xmlFormEditor.form",
+          "group": "navigation"
+        },
+        {
+          "command": "xmlFormEditor.openSource",
+          "when": "activeCustomEditorId == xmlFormEditor.form",
+          "group": "navigation"
+        }
+      ],
+      "explorer/context": [
+        {
+          "command": "xmlFormEditor.openForm",
+          "when": "resourceExtname == .xml",
+          "group": "navigation"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "xmlFormEditor.openForm",
+          "when": "resourceExtname == .xml"
+        },
+        {
+          "command": "xmlFormEditor.openFormToSide",
+          "when": "resourceExtname == .xml"
+        },
+        {
+          "command": "xmlFormEditor.openSource",
+          "when": "activeCustomEditorId == xmlFormEditor.form"
+        },
+        {
+          "command": "xmlFormEditor.save",
+          "when": "activeCustomEditorId == xmlFormEditor.form"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "build:webview": "cargo build -p xml-form-editor-ui --target wasm32-unknown-unknown --release && wasm-bindgen --target web --no-typescript --out-dir dist/webview target/wasm32-unknown-unknown/release/xml_form_editor_ui.wasm",
+    "build:extension": "esbuild src/extension.ts --bundle --platform=node --format=cjs --target=node20 --external:vscode --sourcemap --outfile=dist/extension.js",
+    "build": "npm run build:webview && npm run build:extension",
+    "check": "tsc --noEmit",
+    "test": "cargo test --workspace",
+    "vscode:prepublish": "npm run check && npm run build",
+    "package": "vsce package --no-dependencies"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.43",
+    "@types/vscode": "1.90.0",
+    "@vscode/vsce": "^4.0.0",
+    "esbuild": "^0.28.2",
+    "typescript": "^7.0.2"
+  }
+}

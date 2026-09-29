@@ -1,0 +1,10 @@
+# The package holds only the built extension; esbuild bundles the TypeScript, and the Rust is
+# compiled to dist/webview.
+**
+!package.json
+!README.md
+!CHANGELOG.md
+!LICENSE
+!dist/extension.js
+!dist/webview/**
+!media/**

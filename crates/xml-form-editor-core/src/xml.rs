@@ -234,7 +234,7 @@ pub(crate) fn scan_start_tag(src: &str, start: usize) -> Option<StartTag> {
     }
 }
 
-fn is_space(b: u8) -> bool {
+pub(crate) fn is_space(b: u8) -> bool {
     matches!(b, b' ' | b'\t' | b'\r' | b'\n')
 }
 

@@ -2,7 +2,7 @@
 //!
 //! The form shows only what the document contains. Optional elements it leaves out don't appear,
 //! and required ones it leaves out are reported, because the form edits values and never adds or
-//! removes elements.
+//! removes elements, other than the rows of a matrix (see [`Matrix`]).
 
 use std::collections::HashMap;
 
@@ -50,6 +50,48 @@ pub struct FormNode {
     /// The contents of that file, to show in the section. [`build_form`] leaves them out, as it
     /// reads one document: they come from the linked file's own form.
     pub linked: Option<Box<Linked>>,
+    /// Set when the element is a section holding a matrix, whose elements are its rows
+    pub matrix: Option<Matrix>,
+}
+
+/// What makes a section a matrix: the one element its type allows may repeat, and holds a list of
+/// numbers, so that each of those elements is a row, as in
+/// `<regularisations><row>1.0 0.0</row><row>0.0 1.0</row></regularisations>`.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct Matrix {
+    /// The name of the rows' elements, as the schema declares it
+    pub row_name: String,
+    /// The rows' documentation
+    pub row_doc: Option<String>,
+    /// The type of a row: a list, of the values
+    pub row_type: SimpleInfo,
+    /// How many rows the schema allows
+    pub min_rows: u32,
+    /// `None` for unbounded
+    pub max_rows: Option<u32>,
+}
+
+impl Matrix {
+    /// The type of the values.
+    pub fn value_type(&self) -> Option<&SimpleInfo> {
+        self.row_type.item.as_deref()
+    }
+
+    /// The value new cells start with (see [`SimpleInfo::default_value`]).
+    pub fn fill(&self) -> Option<String> {
+        self.value_type()?.default_value()
+    }
+
+    /// A row of `columns` values to add, when the type of a row allows that many.
+    pub fn new_row(&self, columns: usize) -> Option<String> {
+        let row = vec![self.fill()?; columns].join(" ");
+        self.row_type.validate(&row).is_ok().then_some(row)
+    }
+
+    /// Whether the schema allows this many rows.
+    pub fn allows_rows(&self, rows: usize) -> bool {
+        rows >= self.min_rows as usize && self.max_rows.is_none_or(|max| rows <= max as usize)
+    }
 }
 
 /// The contents of the file a section links to (see [`FormNode::link`]).
@@ -341,6 +383,7 @@ impl Builder<'_> {
             units: None,
             link: None,
             linked: None,
+            matrix: None,
         }
     }
 
@@ -363,8 +406,16 @@ impl Builder<'_> {
                         .push(Note::error("Should hold a value, but holds elements"));
                 }
             }
-            ElementContent::Elements { children, open } => {
-                let children = self.children(node, &out.path, &children, open, &mut out.notes);
+            ElementContent::Elements {
+                children: decls,
+                open,
+            } => {
+                let children = self.children(node, &out.path, &decls, open, &mut out.notes);
+                out.matrix = matrix(schema, &decls, open, &children);
+                if out.matrix.is_some() {
+                    out.notes.extend(uneven_rows(&children));
+                    out.units = out.units.or_else(|| decls[0].decl.units.clone());
+                }
                 out.kind = NodeKind::Section { children };
             }
             ElementContent::Empty => {
@@ -573,6 +624,91 @@ fn link(attributes: &[AttributeField]) -> Option<String> {
         .then(|| href.to_string())
 }
 
+/// The matrix a section holds (see [`Matrix`]), when `decls`, its type's content model, allows one
+/// element, which may repeat and holds a list of numbers, and `children` are all such elements,
+/// with no attributes, which a grid couldn't show.
+fn matrix(
+    schema: &Schema,
+    decls: &[ChildDecl],
+    open: bool,
+    children: &[FormNode],
+) -> Option<Matrix> {
+    let [row] = decls else {
+        return None;
+    };
+    let decl = row.decl;
+    if open
+        || row.max.is_some_and(|max| max < 2)
+        || decl.nillable
+        || decl.fixed.is_some()
+        || !schema.attributes(&decl.ty).is_empty()
+    {
+        return None;
+    }
+    let ElementContent::Text(row_type) = schema.content(&decl.ty) else {
+        return None;
+    };
+    let numbers = row_type
+        .item
+        .as_ref()
+        .is_some_and(|item| item.builtin.is_numeric() && !item.is_list() && !item.is_union());
+    let rows = children.iter().all(|child| {
+        child.path.name() == decl.name
+            && child.attributes.is_empty()
+            && matches!(child.kind, NodeKind::Value(_))
+    });
+    (numbers && rows).then(|| Matrix {
+        row_name: decl.name.clone(),
+        row_doc: decl.doc.clone(),
+        row_type,
+        min_rows: row.min,
+        max_rows: row.max,
+    })
+}
+
+/// A warning when the rows of a matrix don't all have the same number of values. The rows are
+/// numbered from 1, as the form's grid numbers them.
+fn uneven_rows(rows: &[FormNode]) -> Option<Note> {
+    let counts: Vec<usize> = rows
+        .iter()
+        .map(|row| match &row.kind {
+            NodeKind::Value(field) => field.value.split_whitespace().count(),
+            NodeKind::Section { .. } => 0,
+        })
+        .collect();
+    // What most rows have; of equally common counts, the first
+    let mut usual = *counts.first()?;
+    let mut most = 0;
+    for &count in &counts {
+        let times = counts.iter().filter(|&&c| c == count).count();
+        if times > most {
+            (usual, most) = (count, times);
+        }
+    }
+    let odd: Vec<String> = counts
+        .iter()
+        .enumerate()
+        .filter(|&(_, &count)| count != usual)
+        .map(|(i, count)| format!("row {} has {count}", i + 1))
+        .collect();
+    if odd.is_empty() {
+        return None;
+    }
+    const SHOWN: usize = 5;
+    let listed = if odd.len() > SHOWN {
+        format!(
+            "{}, and {} more rows differ",
+            odd[..SHOWN].join(", "),
+            odd.len() - SHOWN
+        )
+    } else {
+        odd.join(", ")
+    };
+    Some(Note::warning(format!(
+        "The rows don't all have the same number of values: {listed}, where the others have {usual}"
+    )))
+}
+
 /// Gives the children that `is_list` says, by name, are items of a list their [`FormNode::index`].
 fn number_items(children: &mut [FormNode], is_list: impl Fn(&str) -> bool) {
     for child in children {
@@ -631,6 +767,7 @@ fn mark_variants(children: &mut [FormNode]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::simple::Builtin;
 
     fn indexes(form: &Form) -> Vec<(&str, Option<usize>)> {
         let NodeKind::Section { children } = &form.root.kind else {
@@ -687,6 +824,79 @@ mod tests {
             root: grid,
         }));
         assert_eq!(form.problems().errors, 1);
+    }
+
+    const MATRIX_XSD: &str = r#"<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+        <xs:simpleType name="DoubleList">
+            <xs:list itemType="xs:double"/>
+        </xs:simpleType>
+        <xs:complexType name="Matrix">
+            <xs:sequence>
+                <xs:element name="row" type="DoubleList" minOccurs="0" maxOccurs="unbounded">
+                    <xs:annotation><xs:documentation>One row</xs:documentation></xs:annotation>
+                </xs:element>
+            </xs:sequence>
+        </xs:complexType>
+        <xs:complexType name="Pair">
+            <xs:sequence>
+                <xs:element name="row" type="DoubleList" maxOccurs="2"/>
+            </xs:sequence>
+        </xs:complexType>
+        <xs:element name="r">
+            <xs:complexType>
+                <xs:all>
+                    <xs:element name="m" type="Matrix"/>
+                    <xs:element name="empty" type="Matrix" minOccurs="0"/>
+                    <xs:element name="pair" type="Pair" minOccurs="0"/>
+                    <xs:element name="odd" type="Matrix" minOccurs="0"/>
+                    <xs:element name="list" type="DoubleList" minOccurs="0"/>
+                </xs:all>
+            </xs:complexType>
+        </xs:element>
+    </xs:schema>"#;
+
+    fn child<'a>(form: &'a Form, name: &str) -> &'a FormNode {
+        let NodeKind::Section { children } = &form.root.kind else {
+            panic!("the root holds elements");
+        };
+        children.iter().find(|c| c.name == name).unwrap()
+    }
+
+    #[test]
+    fn finds_matrices() {
+        let xml = "<r>
+            <m><row>1 2 3</row><row>4 5</row><row>6 7 8</row></m>
+            <empty/>
+            <pair><row>1</row></pair>
+            <odd><row>1</row><other/></odd>
+            <list>1 2</list>
+        </r>";
+        let schema = Schema::parse(MATRIX_XSD).unwrap();
+        let form = build_form(xml, Some(&schema)).unwrap();
+
+        let m = child(&form, "m");
+        let matrix = m.matrix.as_ref().expect("m is a matrix");
+        assert_eq!(matrix.row_name, "row");
+        assert_eq!(matrix.row_doc.as_deref(), Some("One row"));
+        assert_eq!(matrix.value_type().unwrap().builtin, Builtin::Double);
+        assert_eq!((matrix.min_rows, matrix.max_rows), (0, None));
+        assert_eq!(matrix.new_row(3).as_deref(), Some("0.0 0.0 0.0"));
+        assert_eq!(
+            m.notes,
+            [Note::warning(
+                "The rows don't all have the same number of values: row 2 has 2, where the others have 3"
+            )]
+        );
+        assert_eq!(form.problems().warnings, 2, "m's rows, and odd's <other>");
+
+        let empty = child(&form, "empty");
+        assert!(empty.matrix.is_some() && empty.notes.is_empty());
+        let pair = child(&form, "pair").matrix.as_ref().unwrap();
+        assert!(pair.allows_rows(2) && !pair.allows_rows(3) && !pair.allows_rows(0));
+        // Not a matrix: it holds an element that isn't a row, or it's a value, or there's no schema
+        assert_eq!(child(&form, "odd").matrix, None);
+        assert_eq!(child(&form, "list").matrix, None);
+        assert_eq!(child(&build_form(xml, None).unwrap(), "m").matrix, None);
     }
 
     #[test]

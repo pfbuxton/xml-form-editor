@@ -20,10 +20,11 @@ pub(crate) fn row_view(row: Row, ctx: Ctx) -> AnyView {
         Row::Section(row) => section_view(row, ctx).into_any(),
         Row::Value(row) => value_view(row, ctx).into_any(),
         Row::Attribute(row) => attribute_view(row, ctx).into_any(),
+        Row::Matrix(row) => crate::matrix::matrix_view(row, ctx).into_any(),
     }
 }
 
-fn row_class(kind: &str, depth: usize, unused: bool, problem: bool) -> String {
+pub(crate) fn row_class(kind: &str, depth: usize, unused: bool, problem: bool) -> String {
     let mut class = format!("row {kind} depth-{}", depth.min(MAX_INDENT));
     if unused {
         class.push_str(" unused");
@@ -434,7 +435,7 @@ fn text(
     }
 }
 
-fn notes_view(notes: Vec<Note>) -> impl IntoView {
+pub(crate) fn notes_view(notes: Vec<Note>) -> impl IntoView {
     notes
         .into_iter()
         .map(|note| {
@@ -447,7 +448,7 @@ fn notes_view(notes: Vec<Note>) -> impl IntoView {
         .collect_view()
 }
 
-fn variant_badge(variant: &Variant) -> Option<impl IntoView + use<>> {
+pub(crate) fn variant_badge(variant: &Variant) -> Option<impl IntoView + use<>> {
     let (class, text) = match variant {
         Variant::Plain => return None,
         Variant::Selected { selector } => ("badge used", format!("used: chosen by {selector}")),
@@ -463,7 +464,7 @@ fn variant_badge(variant: &Variant) -> Option<impl IntoView + use<>> {
 
 /// The button that copies a row's path (see [`crate::rows::SectionRow::copy_path`]). It shows a
 /// tick for a moment after copying.
-fn copy_button(ctx: Ctx, path: String) -> impl IntoView {
+pub(crate) fn copy_button(ctx: Ctx, path: String) -> impl IntoView {
     let copied = RwSignal::new(false);
     let title = format!("Copy path: {path}");
     view! {
@@ -498,9 +499,9 @@ struct Entry {
 
 /// How a control shows that its value changed: a green border until the file is saved, then blue.
 #[derive(Clone, Copy)]
-struct Mark {
+pub(crate) struct Mark {
     change: Change,
-    title: Option<&'static str>,
+    pub(crate) title: Option<&'static str>,
 }
 
 impl From<Change> for Mark {
@@ -516,7 +517,7 @@ impl From<Change> for Mark {
 
 impl Mark {
     /// The control's classes: `base`, and one for the change.
-    fn class(self, base: &str) -> String {
+    pub(crate) fn class(self, base: &str) -> String {
         match self.change {
             Change::None => base.to_string(),
             Change::Unsaved => format!("{base} unsaved"),
@@ -526,7 +527,7 @@ impl Mark {
 }
 
 /// An element's name, with its index when it's an item of a list: `constraint [0]`.
-fn label(name: String, index: Option<usize>) -> String {
+pub(crate) fn label(name: String, index: Option<usize>) -> String {
     match index {
         Some(index) => format!("{name} [{index}]"),
         None => name,
@@ -534,7 +535,7 @@ fn label(name: String, index: Option<usize>) -> String {
 }
 
 /// Units as the schema writes them, except `1`, the IMAS convention for no units.
-fn units_label(units: String) -> String {
+pub(crate) fn units_label(units: String) -> String {
     if units == "1" {
         "dimensionless".to_string()
     } else {

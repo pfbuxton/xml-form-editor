@@ -3,7 +3,7 @@ name: CI
 on:
   push:
     branches: [main]
-    tags: ["v*"]
+    tags: ["[0-9]*", "v[0-9]*"]
   pull_request:
   workflow_dispatch:
 
@@ -45,13 +45,13 @@ jobs:
           path: "*.vsix"
           if-no-files-found: error
 
-  # Pushing a tag such as v0.1.0 publishes that build to the Marketplace. It signs in with
-  # Microsoft Entra ID rather than a personal access token, as an Azure managed identity with a
-  # federated credential for this repository's `marketplace` environment. The repository
+  # Pushing a tag such as 0.1.1 (or v0.1.1) publishes that build to the Marketplace. It signs in
+  # with Microsoft Entra ID rather than a personal access token, as an Azure managed identity with
+  # a federated credential for this repository's `marketplace` environment. The repository
   # variables AZURE_CLIENT_ID and AZURE_TENANT_ID name the identity, and the identity must be a
   # Contributor to the pfbuxton publisher.
   publish:
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: github.ref_type == 'tag'
     needs: build
     runs-on: ubuntu-latest
     environment: marketplace

@@ -2,7 +2,7 @@
   "name": "xml-form-editor",
   "displayName": "XML Form Editor",
   "description": "Edit the values in an XML file in a form built from its XSD schema: dropdowns for enumerations, checkboxes for booleans, and checking as you type.",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "publisher": "pfbuxton",
   "license": "BSD-3-Clause",
   "repository": {

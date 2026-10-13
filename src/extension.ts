@@ -10,8 +10,29 @@ const VIEW_TYPE = "xmlFormEditor.form";
 /** The forms that are open. */
 const sessions = new Set<FormSession>();
 
+/** The changes the forms hold for linked files, until they're saved (see `Held`). */
+let held: Held;
+
 export function activate(context: vscode.ExtensionContext): void {
+  held = new Held(context.workspaceState);
+  // Changes restored from the backup for files that VS Code reopened in tabs
+  for (const tab of vscode.window.tabGroups.all.flatMap((group) => group.tabs)) {
+    const uri = tabUri(tab);
+    if (uri && held.get(uri)) {
+      void release(uri);
+    }
+  }
   context.subscriptions.push(
+    held,
+    // A file opened in a tab takes the changes the forms hold for it, as unsaved changes
+    vscode.window.tabGroups.onDidChangeTabs(({ opened, changed }) => {
+      for (const tab of [...opened, ...changed]) {
+        const uri = tabUri(tab);
+        if (uri && held.get(uri)) {
+          void release(uri);
+        }
+      }
+    }),
     vscode.window.registerCustomEditorProvider(VIEW_TYPE, new FormEditorProvider(context.extensionUri), {
       // Keeps the form's collapsed sections, filter and scroll position while its tab is hidden
       webviewOptions: { retainContextWhenHidden: true },
@@ -58,11 +79,17 @@ async function saveActiveForm(): Promise<void> {
 
 /** The file in the active tab, whether it's open as text or in the form. */
 function activeUri(): vscode.Uri | undefined {
-  const input = vscode.window.tabGroups.activeTabGroup.activeTab?.input;
+  const tab = vscode.window.tabGroups.activeTabGroup.activeTab;
+  return (tab && tabUri(tab)) ?? vscode.window.activeTextEditor?.document.uri;
+}
+
+/** The file a tab shows, as text or in a custom editor such as the form. */
+function tabUri(tab: vscode.Tab): vscode.Uri | undefined {
+  const input = tab.input;
   if (input instanceof vscode.TabInputText || input instanceof vscode.TabInputCustom) {
     return input.uri;
   }
-  return vscode.window.activeTextEditor?.document.uri;
+  return undefined;
 }
 
 type TextEdit = { start: number; end: number; text: string };
@@ -156,6 +183,11 @@ class FormSession implements vscode.Disposable {
           this.sendDocument(opened);
         }
       }),
+      held.onDidChange(async (uri) => {
+        if (this.files.has(uri.toString())) {
+          this.sendDocument(await vscode.workspace.openTextDocument(uri));
+        }
+      }),
     );
   }
 
@@ -166,17 +198,31 @@ class FormSession implements vscode.Disposable {
 
   dispose(): void {
     const unsaved = vscode.workspace.textDocuments.filter((d) => d.isDirty && this.changed.has(d.uri.toString()));
+    // Linked files that no other form shows, whose changes the forms may hold
+    const linked = [...this.files.values()]
+      .map(({ uri }) => uri)
+      .filter((uri) => !sameUri(uri, this.document.uri) && ![...sessions].some((s) => s.shows(uri)));
     this.files.forEach((file) => file.watcher?.dispose());
     this.schemas.forEach((schema) => schema.watcher.dispose());
     this.disposables.forEach((d) => d.dispose());
     if (unsaved.length > 0) {
       void offerToSave(unsaved);
     }
+    void askToSaveHeld(linked);
+  }
+
+  /** Whether the form shows a file. */
+  shows(uri: vscode.Uri): boolean {
+    return this.files.has(uri.toString());
   }
 
   /** Saves the file and the files it links to, those with unsaved changes. */
   async saveAll(): Promise<void> {
     for (const { uri } of this.files.values()) {
+      if (held.get(uri)) {
+        await saveHeld(uri);
+        continue;
+      }
       const document = vscode.workspace.textDocuments.find((d) => sameUri(d.uri, uri));
       if (document?.isDirty && !(await document.save())) {
         void vscode.window.showErrorMessage(`Could not save ${displayPath(uri)}.`);
@@ -212,9 +258,11 @@ class FormSession implements vscode.Disposable {
     }
   }
 
+  /** Sends the form a file: the document, or the changes held for it, which aren't saved. */
   private sendDocument(document: vscode.TextDocument): void {
     const uri = document.uri.toString();
-    const text = document.getText();
+    const change = held.get(document.uri);
+    const text = change?.text ?? document.getText();
     const file = this.files.get(uri);
     if (file) {
       file.sent = text;
@@ -224,8 +272,8 @@ class FormSession implements vscode.Disposable {
       uri,
       main: sameUri(document.uri, this.document.uri),
       text,
-      version: document.version,
-      dirty: document.isDirty,
+      version: change?.version ?? document.version,
+      dirty: change ? true : document.isDirty,
     });
   }
 
@@ -312,6 +360,11 @@ class FormSession implements vscode.Disposable {
     answer({ uri: document.uri.toString() });
     await this.sendSaved(document.uri, document.isDirty);
     this.sendDocument(document);
+    if (held.takeRestored(document.uri)) {
+      void vscode.window.showInformationMessage(
+        `The form has the changes to ${basename(document.uri)} that weren't saved when VS Code closed. Save to keep them.`,
+      );
+    }
   }
 
   private async applyEdit(file: string, id: number, version: number, edits: TextEdit[]): Promise<void> {
@@ -323,21 +376,38 @@ class FormSession implements vscode.Disposable {
       if (!shown) {
         throw new Error("the form doesn't show that file");
       }
-      document = await vscode.workspace.openTextDocument(shown.uri);
+      const uri = shown.uri;
+      // A linked file that no tab shows has its changes held, as VS Code would open a tab for it
+      // with unsaved changes; one that a tab shows has them in its document, as unsaved changes
+      const hold = !sameUri(uri, this.document.uri) && uri.scheme !== "untitled" && !isInTab(uri);
+      if (!hold) {
+        await release(uri);
+      }
+      document = await vscode.workspace.openTextDocument(uri);
+      const change = held.get(uri);
+      const current = change ?? { text: document.getText(), version: document.version };
       // Edits made against another version would land in the wrong place. Refused, the form makes
       // them again against the new text. The text is compared too, as a file that VS Code closed
       // and opened again counts its versions afresh.
-      if (version === document.version && document.getText() === shown.sent) {
-        const edit = new vscode.WorkspaceEdit();
-        for (const { start, end, text } of edits) {
-          const range = new vscode.Range(document.positionAt(start), document.positionAt(end));
-          edit.replace(document.uri, range, text);
-        }
-        applied = await vscode.workspace.applyEdit(edit);
-        if (!applied) {
-          error = "VS Code refused the edit. Is the file read-only?";
-        } else if (!sameUri(document.uri, this.document.uri)) {
-          this.changed.add(file);
+      if (version === current.version && current.text === shown.sent) {
+        if (hold) {
+          const text = applyTextEdits(current.text, edits);
+          const base = change?.base ?? document.getText();
+          // Edited back as it was, there's nothing to hold
+          held.set(uri, text === base ? undefined : { text, version: current.version + 1, base });
+          applied = true;
+        } else {
+          const edit = new vscode.WorkspaceEdit();
+          for (const { start, end, text } of edits) {
+            const range = new vscode.Range(document.positionAt(start), document.positionAt(end));
+            edit.replace(uri, range, text);
+          }
+          applied = await vscode.workspace.applyEdit(edit);
+          if (!applied) {
+            error = "VS Code refused the edit. Is the file read-only?";
+          } else if (!sameUri(uri, this.document.uri)) {
+            this.changed.add(file);
+          }
         }
       }
     } catch (e) {
@@ -365,6 +435,8 @@ class FormSession implements vscode.Disposable {
     if (!shown) {
       return;
     }
+    // The text shown has the changes the form holds, which the offset counts
+    await release(shown.uri);
     const document = await vscode.workspace.openTextDocument(shown.uri);
     const editor = await this.showText(document);
     const position = document.positionAt(offset);
@@ -418,8 +490,186 @@ class FormSession implements vscode.Disposable {
   }
 }
 
+/** A linked file's text with the changes the forms hold for it (see `Held`). */
+type HeldChange = {
+  text: string;
+  /** Counts the changes, as a document's version does, for the forms to make edits against */
+  version: number;
+  /** The file's text the changes were made to, to tell whether it has changed since */
+  base: string;
+};
+
+/** Where `Held` backs up the changes, in the workspace's storage. */
+const BACKUP_KEY = "heldChanges";
+
+/**
+ * The changes the forms make to linked files that no tab shows, until they're saved. VS Code shows
+ * every file with unsaved changes in a tab, so that none go unnoticed, and would open one for each
+ * linked file the form changed, so the changes are held here instead of in the files' documents.
+ * They're backed up in the workspace's storage, in case VS Code closes before they're saved.
+ */
+class Held implements vscode.Disposable {
+  private readonly changes = new Map<string, HeldChange>();
+  /** Files whose changes came from the backup, until a form shows them */
+  private readonly restored = new Set<string>();
+  private readonly changed = new vscode.EventEmitter<vscode.Uri>();
+  /** A file's held changes changed, or were saved or let go */
+  readonly onDidChange = this.changed.event;
+
+  constructor(private readonly storage: vscode.Memento) {
+    const backup = storage.get<Record<string, { text: string; base: string }>>(BACKUP_KEY) ?? {};
+    for (const [uri, { text, base }] of Object.entries(backup)) {
+      this.changes.set(uri, { text, base, version: 1 });
+      this.restored.add(uri);
+    }
+  }
+
+  dispose(): void {
+    this.changed.dispose();
+  }
+
+  get(uri: vscode.Uri): HeldChange | undefined {
+    return this.changes.get(uri.toString());
+  }
+
+  /** Holds a file's changes, or with `undefined`, lets them go. */
+  set(uri: vscode.Uri, change: HeldChange | undefined): void {
+    const key = uri.toString();
+    if (change) {
+      this.changes.set(key, change);
+    } else {
+      this.changes.delete(key);
+    }
+    this.restored.delete(key);
+    const backup = Object.fromEntries([...this.changes].map(([uri, { text, base }]) => [uri, { text, base }]));
+    void this.storage.update(BACKUP_KEY, backup);
+    this.changed.fire(uri);
+  }
+
+  /** Whether the changes held for a file came from the backup, the first time a form shows it. */
+  takeRestored(uri: vscode.Uri): boolean {
+    return this.restored.delete(uri.toString());
+  }
+}
+
+/**
+ * Moves the changes held for a file into its document, where they're unsaved changes as any
+ * other: as a tab shows the file, or before it does.
+ */
+async function release(uri: vscode.Uri): Promise<void> {
+  const change = held.get(uri);
+  if (!change) {
+    return;
+  }
+  const document = await vscode.workspace.openTextDocument(uri);
+  // The document has them before they're let go, so that the forms go on showing them
+  if (document.getText() === change.text || (await vscode.workspace.applyEdit(replaceAll(document, change.text)))) {
+    held.set(uri, undefined);
+  } else {
+    void vscode.window.showErrorMessage(`Could not put the form's changes into ${displayPath(uri)}.`);
+  }
+}
+
+/**
+ * Saves the changes held for a file. When the file has changed since they were made, that asks
+ * first whether to write over it.
+ */
+async function saveHeld(uri: vscode.Uri): Promise<void> {
+  const change = held.get(uri);
+  if (!change) {
+    return;
+  }
+  const document = await vscode.workspace.openTextDocument(uri);
+  if (document.getText() !== change.base) {
+    const overwrite = "Overwrite";
+    const discard = "Discard the Form's Changes";
+    const choice = await vscode.window.showWarningMessage(
+      `${basename(uri)} has changed since the form changed it.`,
+      { modal: true, detail: "Overwriting replaces the other changes with the form's." },
+      overwrite,
+      discard,
+    );
+    if (choice === discard) {
+      held.set(uri, undefined);
+    }
+    if (choice !== overwrite) {
+      return;
+    }
+  }
+  // Saved straight away, the document never has unsaved changes long enough for VS Code to open a
+  // tab for it
+  if (!(await vscode.workspace.applyEdit(replaceAll(document, change.text)))) {
+    void vscode.window.showErrorMessage(`Could not save ${displayPath(uri)}: VS Code refused the changes.`);
+    return;
+  }
+  held.set(uri, undefined);
+  const saved = await document.save().then(
+    (saved) => saved,
+    () => false,
+  );
+  if (!saved) {
+    void vscode.window.showErrorMessage(`Could not save ${displayPath(uri)}.`);
+  }
+}
+
+/** Asks whether to save the changes held for the files of a form that closed. */
+async function askToSaveHeld(uris: vscode.Uri[]): Promise<void> {
+  const files = uris.filter((uri) => held.get(uri));
+  if (files.length === 0) {
+    return;
+  }
+  const names = files.map(basename).join(", ");
+  const save = "Save";
+  const dontSave = "Don't Save";
+  const choice = await vscode.window.showWarningMessage(
+    `Do you want to save the changes the form made to ${names}?`,
+    { modal: true, detail: "If you don't, they're lost. Cancel keeps them, for when the form shows them again." },
+    save,
+    dontSave,
+  );
+  for (const uri of files) {
+    if (choice === save) {
+      await saveHeld(uri);
+    } else if (choice === dontSave) {
+      held.set(uri, undefined);
+    }
+  }
+}
+
+/** An edit that replaces all of a document's text. */
+function replaceAll(document: vscode.TextDocument, text: string): vscode.WorkspaceEdit {
+  const edit = new vscode.WorkspaceEdit();
+  edit.replace(document.uri, new vscode.Range(document.positionAt(0), document.positionAt(document.getText().length)), text);
+  return edit;
+}
+
+/** Makes edits to a text, as VS Code makes them to a document: offsets count UTF-16 units. */
+function applyTextEdits(text: string, edits: TextEdit[]): string {
+  // From the end, so that the offsets of those still to make hold
+  for (const edit of [...edits].sort((a, b) => b.start - a.start)) {
+    text = text.slice(0, edit.start) + edit.text + text.slice(edit.end);
+  }
+  return text;
+}
+
+/** Whether a tab shows a file, as text or in a custom editor such as the form. */
+function isInTab(uri: vscode.Uri): boolean {
+  return vscode.window.tabGroups.all.some((group) =>
+    group.tabs.some((tab) => {
+      const shown = tabUri(tab);
+      return shown !== undefined && sameUri(shown, uri);
+    }),
+  );
+}
+
 /** Offers to save the linked files that a form changed and didn't save, as it closes. */
-async function offerToSave(documents: vscode.TextDocument[]): Promise<void> {
+async function offerToSave(dirty: vscode.TextDocument[]): Promise<void> {
+  // Those edited back as they were have nothing to save
+  const differ = await Promise.all(dirty.map(differsFromDisk));
+  const documents = dirty.filter((_, i) => differ[i]);
+  if (documents.length === 0) {
+    return;
+  }
   const names = documents.map((d) => basename(d.uri)).join(", ");
   const verb = documents.length === 1 ? "is" : "are";
   const choice = await vscode.window.showWarningMessage(
@@ -430,6 +680,15 @@ async function offerToSave(documents: vscode.TextDocument[]): Promise<void> {
     for (const document of documents) {
       await document.save();
     }
+  }
+}
+
+/** Whether a document's text differs from its file's; `true` when the file can't be read. */
+async function differsFromDisk(document: vscode.TextDocument): Promise<boolean> {
+  try {
+    return new TextDecoder().decode(await vscode.workspace.fs.readFile(document.uri)) !== document.getText();
+  } catch {
+    return true;
   }
 }
 

@@ -118,15 +118,12 @@ pub(crate) fn post(message: &Out) {
 
 pub(crate) fn on_message(mut handler: impl FnMut(In) + 'static) {
     let listener =
-        Closure::<dyn FnMut(web_sys::MessageEvent)>::new(move |event: web_sys::MessageEvent| {
-            match serde_wasm_bindgen::from_value::<In>(event.data()) {
-                Ok(message) => handler(message),
-                Err(error) => web_sys::console::warn_1(&error.into()),
-            }
+        Closure::<dyn FnMut(web_sys::MessageEvent)>::new(move |event: web_sys::MessageEvent| match serde_wasm_bindgen::from_value::<In>(event.data()) {
+            Ok(message) => handler(message),
+            Err(error) => web_sys::console::warn_1(&error.into()),
         });
     if let Some(window) = web_sys::window() {
-        let _ =
-            window.add_event_listener_with_callback("message", listener.as_ref().unchecked_ref());
+        let _ = window.add_event_listener_with_callback("message", listener.as_ref().unchecked_ref());
     }
     // The listener lives as long as the page
     listener.forget();

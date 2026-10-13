@@ -72,27 +72,15 @@ mod tests {
         // 'µ' is 2 bytes and 1 UTF-16 unit; '𝜓' is 4 bytes and 2 units
         let text = "aµb𝜓c";
         let offsets = Utf16Offsets::new(text);
-        let expected: Vec<u32> = [0, 1, 3, 4, 8, 9]
-            .iter()
-            .map(|&b| text[..b].encode_utf16().count() as u32)
-            .collect();
+        let expected: Vec<u32> = [0, 1, 3, 4, 8, 9].iter().map(|&b| text[..b].encode_utf16().count() as u32).collect();
         let actual: Vec<u32> = [0, 1, 3, 4, 8, 9].iter().map(|&b| offsets.of(b)).collect();
         assert_eq!(actual, expected);
     }
 
     #[test]
     fn escaping() {
-        assert_eq!(
-            escape_text("a < b && c > d"),
-            "a &lt; b &amp;&amp; c &gt; d"
-        );
-        assert_eq!(
-            escape_attribute(r#"say "hi" & 'bye'"#, b'"'),
-            "say &quot;hi&quot; &amp; 'bye'"
-        );
-        assert_eq!(
-            escape_attribute(r#"say "hi" & 'bye'"#, b'\''),
-            "say \"hi\" &amp; &apos;bye&apos;"
-        );
+        assert_eq!(escape_text("a < b && c > d"), "a &lt; b &amp;&amp; c &gt; d");
+        assert_eq!(escape_attribute(r#"say "hi" & 'bye'"#, b'"'), "say &quot;hi&quot; &amp; 'bye'");
+        assert_eq!(escape_attribute(r#"say "hi" & 'bye'"#, b'\''), "say \"hi\" &amp; &apos;bye&apos;");
     }
 }

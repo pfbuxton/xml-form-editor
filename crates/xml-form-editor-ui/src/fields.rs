@@ -1,13 +1,16 @@
 //! The rows' views: section headings, and the controls that edit values.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use leptos::html;
 use leptos::prelude::*;
+use wasm_bindgen::JsCast;
+use web_sys::{HtmlElement, HtmlInputElement};
 use xml_form_editor_core::{AttributeField, EditOp, EnumValue, Field, Note, Severity, Variant};
 
 use crate::Ctx;
-use crate::rows::{AttributeRow, Change, LinkedFile, Place, Row, SectionRow, ValueRow};
+use crate::rows::{AddRow, AttributeRow, Change, LinkedFile, Place, Row, SectionRow, ValueRow};
 
 /// Rows deeper than this are indented no further.
 const MAX_INDENT: usize = 12;
@@ -16,12 +19,53 @@ const MAX_INDENT: usize = 12;
 const COPIED_TICK: Duration = Duration::from_millis(1500);
 
 pub(crate) fn row_view(row: Row, ctx: Ctx) -> AnyView {
+    let key = match &row {
+        Row::Section(row) => Some(&row.place.key),
+        Row::Value(row) => Some(&row.place.key),
+        Row::Matrix(row) => Some(&row.place.key),
+        Row::Attribute(_) | Row::Add(_) => None,
+    };
+    if let Some(key) = key.filter(|key| ctx.take_focus(key)) {
+        focus_item(key.clone());
+    }
     match row {
         Row::Section(row) => section_view(row, ctx).into_any(),
         Row::Value(row) => value_view(row, ctx).into_any(),
         Row::Attribute(row) => attribute_view(row, ctx).into_any(),
         Row::Matrix(row) => crate::matrix::matrix_view(row, ctx).into_any(),
+        Row::Add(row) => add_view(row, ctx).into_any(),
     }
+}
+
+/// Once the rows show, focuses the first control of the item whose row has this key, in its row or
+/// the rows of what it holds, and selects its value, so that typing replaces it. An item without
+/// one is scrolled to.
+fn focus_item(key: String) {
+    request_animation_frame(move || {
+        let key = key.replace('\\', "\\\\").replace('"', "\\\"");
+        let find = |selector: String| document().query_selector(&selector).ok().flatten();
+        let control = find(format!(
+            "[data-path=\"{key}\"] input, [data-path=\"{key}\"] select, \
+             [data-path^=\"{key}/\"] input, [data-path^=\"{key}/\"] select"
+        ));
+        match control {
+            Some(control) => {
+                if let Some(control) = control.dyn_ref::<HtmlElement>() {
+                    let _ = control.focus();
+                }
+                if let Some(input) = control.dyn_ref::<HtmlInputElement>()
+                    && input.type_() == "text"
+                {
+                    input.select();
+                }
+            }
+            None => {
+                if let Some(row) = find(format!("[data-path=\"{key}\"]")) {
+                    row.scroll_into_view();
+                }
+            }
+        }
+    });
 }
 
 pub(crate) fn row_class(kind: &str, depth: usize, unused: bool, problem: bool) -> String {
@@ -50,9 +94,12 @@ fn section_view(row: SectionRow, ctx: Ctx) -> impl IntoView {
         empty,
         offset,
         linked_file,
+        remove,
     } = row;
     let problem = notes.iter().any(|n| n.severity == Severity::Error);
     let Place { document, key, .. } = place;
+    let label = label(name, index);
+    let remove = remove.map(|remove| remove_button(ctx, document.clone(), &label, remove));
     let toggle = {
         let key = key.clone();
         move |_| {
@@ -75,10 +122,11 @@ fn section_view(row: SectionRow, ctx: Ctx) -> impl IntoView {
                         </svg>
                     </button>
                 })}
-                <span class="name" title="Show in the XML" on:click=move |_| ctx.reveal(&document, offset)>{label(name, index)}</span>
+                <span class="name" title="Show in the XML" on:click=move |_| ctx.reveal(&document, offset)>{label}</span>
                 {linked_file.map(|file| file_badge(ctx, file))}
                 {variant_badge(&variant)}
                 {copy_path.map(|path| copy_button(ctx, path))}
+                {remove}
             </div>
             {doc.map(|doc| view! { <div class="doc">{doc}</div> })}
             {empty.then(|| view! { <div class="doc">"(no settings)"</div> })}
@@ -89,11 +137,7 @@ fn section_view(row: SectionRow, ctx: Ctx) -> impl IntoView {
 
 /// The name of the file a section shows, which opens it.
 fn file_badge(ctx: Ctx, file: LinkedFile) -> impl IntoView {
-    let LinkedFile {
-        href,
-        document,
-        offset,
-    } = file;
+    let LinkedFile { href, document, offset } = file;
     view! {
         <span class="file" title="The file these settings are in. Click to show it." on:click=move |_| ctx.reveal(&document, offset)>
             {href}
@@ -117,18 +161,22 @@ fn value_view(row: ValueRow, ctx: Ctx) -> impl IntoView {
         offset,
         units,
         change,
+        remove,
     } = row;
     let problem = field.error.is_some() || notes.iter().any(|n| n.severity == Severity::Error);
     let summary = field.ty.as_ref().map(|ty| ty.summary());
     let type_doc = field.ty.as_ref().and_then(|ty| ty.doc.clone());
     let (key, document) = (place.key.clone(), place.document.clone());
+    let label = label(name, index);
+    let remove = remove.map(|remove| remove_button(ctx, document.clone(), &label, remove));
     view! {
         <div class=row_class("value", depth, unused, problem) data-path=key>
             <div class="title">
-                <span class="name" title="Show in the XML" on:click=move |_| ctx.reveal(&document, offset)>{label(name, index)}</span>
+                <span class="name" title="Show in the XML" on:click=move |_| ctx.reveal(&document, offset)>{label}</span>
                 {summary.map(|summary| view! { <span class="type" title=type_doc>{summary}</span> })}
                 {variant_badge(&variant)}
                 {copy_path.map(|path| copy_button(ctx, path))}
+                {remove}
             </div>
             {doc.map(|doc| view! { <div class="doc">{doc}</div> })}
             {selector.then(|| view! { <div class="doc hint">"Chooses which of the sections below is used."</div> })}
@@ -232,13 +280,7 @@ fn widget(field: &Field) -> Widget {
 ///
 /// Only valid values are written. An invalid one stays in the control with the reason it wasn't
 /// written, until it's fixed or Escape restores the value in the file.
-fn editor(
-    ctx: Ctx,
-    target: Target,
-    field: Field,
-    units: Option<String>,
-    change: Change,
-) -> impl IntoView {
+fn editor(ctx: Ctx, target: Target, field: Field, units: Option<String>, change: Change) -> impl IntoView {
     // Set once the user types or picks a value, which then decides what error shows
     let touched = RwSignal::new(false);
     let rejected = RwSignal::new(None::<String>);
@@ -247,17 +289,10 @@ fn editor(
     let input = NodeRef::<html::Input>::new();
 
     let widget = widget(&field);
-    let current = if field.nil {
-        String::new()
-    } else {
-        field.display_value()
-    };
+    let current = if field.nil { String::new() } else { field.display_value() };
     let (file_nil, nillable, file_error) = (field.nil, field.nillable, field.error.clone());
     let chosen_doc = match &widget {
-        Widget::Choice(options) if !file_nil => options
-            .iter()
-            .find(|o| o.value == current)
-            .and_then(|o| o.doc.clone()),
+        Widget::Choice(options) if !file_nil => options.iter().find(|o| o.value == current).and_then(|o| o.doc.clone()),
         _ => None,
     };
     let field = StoredValue::new(field);
@@ -281,22 +316,10 @@ fn editor(
     let mark = Mark::from(change);
     let control = match widget {
         Widget::Choice(options) => choice(options, current, file_nil, nil, mark, commit).into_any(),
-        Widget::Checkbox => {
-            checkbox(matches!(current.as_str(), "true" | "1"), mark, commit).into_any()
-        }
-        Widget::Text => text(
-            current,
-            field,
-            nil,
-            Entry { touched, rejected },
-            input,
-            mark,
-            commit,
-        )
-        .into_any(),
+        Widget::Checkbox => checkbox(matches!(current.as_str(), "true" | "1"), mark, commit).into_any(),
+        Widget::Text => text(current, field, nil, Entry { touched, rejected }, input, mark, commit).into_any(),
     };
-    let units =
-        units.map(|units| view! { <span class="units" title="Units">{units_label(units)}</span> });
+    let units = units.map(|units| view! { <span class="units" title="Units">{units_label(units)}</span> });
 
     let nil_toggle = nillable.then(|| {
         let on_change = move |ev: web_sys::Event| {
@@ -452,12 +475,8 @@ pub(crate) fn variant_badge(variant: &Variant) -> Option<impl IntoView + use<>> 
     let (class, text) = match variant {
         Variant::Plain => return None,
         Variant::Selected { selector } => ("badge used", format!("used: chosen by {selector}")),
-        Variant::Unselected { selector, value } if value.is_empty() => {
-            ("badge unused", format!("not used: {selector} is not set"))
-        }
-        Variant::Unselected { selector, value } => {
-            ("badge unused", format!("not used: {selector} is {value}"))
-        }
+        Variant::Unselected { selector, value } if value.is_empty() => ("badge unused", format!("not used: {selector} is not set")),
+        Variant::Unselected { selector, value } => ("badge unused", format!("not used: {selector} is {value}")),
     };
     Some(view! { <span class=class>{text}</span> })
 }
@@ -487,6 +506,79 @@ pub(crate) fn copy_button(ctx: Ctx, path: String) -> impl IntoView {
                 <path d="M3 8.5 6.5 12 13 4.5" />
             </svg>
         </button>
+    }
+}
+
+/// The button that removes an item of a list, `label`, by making `remove`, or that says why it
+/// can't be removed.
+pub(crate) fn remove_button(ctx: Ctx, document: Arc<str>, label: &str, remove: Result<EditOp, String>) -> impl IntoView + use<> {
+    let action = format!("Remove {label}");
+    let (title, op) = match remove {
+        Ok(op) => (action.clone(), Some(op)),
+        Err(why) => (why, None),
+    };
+    view! {
+        <button
+            class="remove-item"
+            title=title
+            aria-label=action
+            disabled=op.is_none()
+            on:click=move |ev: web_sys::MouseEvent| {
+                // The second click of a double click would remove the item that took its place
+                if ev.detail() > 1 {
+                    return;
+                }
+                if let Some(op) = op.clone() {
+                    ctx.edit(document.clone(), op);
+                }
+            }
+        >
+            <svg class="icon" viewBox="0 0 16 16" aria-hidden="true">
+                <path d="M5 5l6 6M11 5l-6 6" />
+            </svg>
+        </button>
+    }
+}
+
+/// The button that adds an item to a list, or that says why it can't. The new item takes the
+/// focus when it shows.
+fn add_view(row: AddRow, ctx: Ctx) -> impl IntoView {
+    let AddRow {
+        place,
+        depth,
+        name,
+        unused,
+        add,
+        new_key,
+    } = row;
+    let (title, op) = match add {
+        Ok((op, adds)) => (adds, Some(op)),
+        Err(why) => (why, None),
+    };
+    let document = place.document;
+    view! {
+        <div class=row_class("add-item", depth, unused, false)>
+            <button
+                class="add-first"
+                title=title
+                disabled=op.is_none()
+                on:click=move |ev: web_sys::MouseEvent| {
+                    // A double click adds one item
+                    if ev.detail() > 1 {
+                        return;
+                    }
+                    if let Some(op) = op.clone() {
+                        ctx.focus_when_shown(new_key.clone());
+                        ctx.edit(document.clone(), op);
+                    }
+                }
+            >
+                <svg class="icon" viewBox="0 0 16 16" aria-hidden="true">
+                    <path d="M8 3.5v9M3.5 8h9" />
+                </svg>
+                {format!("Add {name}")}
+            </button>
+        </div>
     }
 }
 
@@ -536,9 +628,5 @@ pub(crate) fn label(name: String, index: Option<usize>) -> String {
 
 /// Units as the schema writes them, except `1`, the IMAS convention for no units.
 pub(crate) fn units_label(units: String) -> String {
-    if units == "1" {
-        "dimensionless".to_string()
-    } else {
-        units
-    }
+    if units == "1" { "dimensionless".to_string() } else { units }
 }

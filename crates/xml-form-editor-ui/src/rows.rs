@@ -11,9 +11,7 @@ use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::Arc;
 
-use xml_form_editor_core::{
-    AttributeField, Field, Form, FormNode, Matrix, NodeKind, Note, Path, Variant,
-};
+use xml_form_editor_core::{AttributeField, EditOp, Field, Form, FormNode, List, Matrix, NodeKind, Note, Path, Variant};
 
 use crate::Shared;
 
@@ -23,7 +21,11 @@ pub(crate) enum Row {
     Value(ValueRow),
     Attribute(AttributeRow),
     Matrix(MatrixRow),
+    Add(AddRow),
 }
+
+/// For an item of a list, the change that removes it, or why it can't be removed.
+pub(crate) type Remove = Option<Result<EditOp, String>>;
 
 /// Where a row's element is.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -57,6 +59,7 @@ pub(crate) struct SectionRow {
     pub offset: u32,
     /// The file the section shows, when it links to one
     pub linked_file: Option<LinkedFile>,
+    pub remove: Remove,
 }
 
 /// The file a section links to and shows.
@@ -85,6 +88,7 @@ pub(crate) struct ValueRow {
     pub offset: u32,
     pub units: Option<String>,
     pub change: Change,
+    pub remove: Remove,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -115,6 +119,23 @@ pub(crate) struct MatrixRow {
     pub units: Option<String>,
     pub matrix: Matrix,
     pub lines: Vec<MatrixLine>,
+    pub remove: Remove,
+}
+
+/// The button that adds an item to a list: below its last item, or where the first goes.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct AddRow {
+    /// The section the list is in
+    pub place: Place,
+    pub depth: usize,
+    /// The items' name
+    pub name: String,
+    pub unused: bool,
+    /// The change that adds an item, with what it adds, as the button's tooltip says; or why one
+    /// can't be added
+    pub add: Result<(EditOp, String), String>,
+    /// The key of the item it adds, to focus it when it shows (see [`Place::key`])
+    pub new_key: String,
 }
 
 /// A row of a matrix.
@@ -149,9 +170,7 @@ pub(crate) enum Change {
 impl Change {
     /// How the value at `key` in a document (see [`xml_form_editor_core::values`]) changed.
     fn of(key: &str, value: Option<String>, versions: Option<&Versions>) -> Change {
-        let differs = |values: &Option<Shared<Values>>| {
-            values.as_ref().is_some_and(|v| v.get(key) != Some(&value))
-        };
+        let differs = |values: &Option<Shared<Values>>| values.as_ref().is_some_and(|v| v.get(key) != Some(&value));
         match versions {
             Some(versions) if differs(&versions.saved) => Change::Unsaved,
             Some(versions) if differs(&versions.original) => Change::Saved,
@@ -178,9 +197,7 @@ impl Change {
             Some(versions) => (list(&versions.saved), list(&versions.original)),
             None => (None, None),
         };
-        let differs = |old: &Option<Vec<String>>, i: usize, value: &String| {
-            old.as_ref().is_some_and(|old| old.get(i) != Some(value))
-        };
+        let differs = |old: &Option<Vec<String>>, i: usize, value: &String| old.as_ref().is_some_and(|old| old.get(i) != Some(value));
         values
             .iter()
             .enumerate()
@@ -208,6 +225,7 @@ impl Row {
             Row::Value(row) => row.place.key.clone(),
             Row::Attribute(row) => format!("{}/@{}", row.place.key, row.attribute.name),
             Row::Matrix(row) => return format!("{}#matrix", row.place.key),
+            Row::Add(row) => format!("{}/{}#add", row.place.key, row.name),
         };
         let mut hasher = DefaultHasher::new();
         self.hash(&mut hasher);
@@ -245,6 +263,7 @@ pub(crate) fn rows(form: &Form, document: &Arc<str>, folding: &Folding) -> Vec<R
         copy_path: "",
         document,
         key_prefix: "",
+        lists: &[],
     };
     walk(&form.root, 0, above, &filter, folding, &mut out);
     out
@@ -263,6 +282,8 @@ struct Above<'a> {
     document: &'a Arc<str>,
     /// What the node's key starts with (see [`Place::key`])
     key_prefix: &'a str,
+    /// The lists in the section the node is in, one of which it's an item of when it's numbered
+    lists: &'a [List],
 }
 
 impl Above<'_> {
@@ -273,16 +294,19 @@ impl Above<'_> {
             key: format!("{}{}", self.key_prefix, node.path),
         }
     }
+
+    /// For an item of a list, the change that removes it, or why it can't be removed.
+    fn remove(&self, node: &FormNode) -> Remove {
+        node.index?;
+        let list = self.lists.iter().find(|l| l.name == node.path.name())?;
+        Some(match list.why_not_remove() {
+            None => Ok(EditOp::RemoveElement { path: node.path.clone() }),
+            Some(why) => Err(why),
+        })
+    }
 }
 
-fn walk(
-    node: &FormNode,
-    depth: usize,
-    above: Above,
-    filter: &str,
-    folding: &Folding,
-    out: &mut Vec<Row>,
-) {
+fn walk(node: &FormNode, depth: usize, above: Above, filter: &str, folding: &Folding, out: &mut Vec<Row>) {
     let unused = above.unused || matches!(node.variant, Variant::Unselected { .. });
     if unused && folding.hide_unused {
         return;
@@ -292,10 +316,10 @@ fn walk(
     }
     // A section whose name matches shows all it holds; one whose description matches shows only
     // what matches in it. The root's name doesn't count, or everything would match.
-    let matched = above.matched
-        || (!filter.is_empty() && depth > 0 && node.name.to_lowercase().contains(filter));
+    let matched = above.matched || (!filter.is_empty() && depth > 0 && node.name.to_lowercase().contains(filter));
     let copy_path = (depth > 0).then(|| join(above.copy_path, &step(node)));
     let place = above.place(node);
+    let remove = above.remove(node);
     let inner = Above {
         unused,
         matched,
@@ -317,6 +341,7 @@ fn walk(
             units: node.units.clone(),
             matrix: matrix.clone(),
             lines: matrix_lines(children, folding.versions.get(above.document)),
+            remove,
         }));
         // Its attributes follow, as a value's do
         push_attributes(node, depth + 1, inner, filter, folding, out);
@@ -325,14 +350,8 @@ fn walk(
     match &node.kind {
         NodeKind::Section { children } => {
             // A linked file starts folded, so that a file linking to many reads as a list of them
-            let collapsed_by_default =
-                matches!(node.variant, Variant::Unselected { .. }) || node.linked.is_some();
-            let expanded = !filter.is_empty()
-                || folding
-                    .expanded
-                    .get(&place.key)
-                    .copied()
-                    .unwrap_or(!collapsed_by_default);
+            let collapsed_by_default = matches!(node.variant, Variant::Unselected { .. }) || node.linked.is_some();
+            let expanded = !filter.is_empty() || folding.expanded.get(&place.key).copied().unwrap_or(!collapsed_by_default);
             let linked = node.linked.as_deref();
             let mut notes = node.notes.clone();
             let mut doc = node.doc.clone();
@@ -355,13 +374,12 @@ fn walk(
                 expanded,
                 empty: children.is_empty() && node.attributes.is_empty() && linked.is_none(),
                 offset: node.offset,
-                linked_file: linked
-                    .zip(node.link.as_ref())
-                    .map(|(linked, href)| LinkedFile {
-                        href: href.clone(),
-                        document: linked.document.as_str().into(),
-                        offset: linked.root.offset,
-                    }),
+                linked_file: linked.zip(node.link.as_ref()).map(|(linked, href)| LinkedFile {
+                    href: href.clone(),
+                    document: linked.document.as_str().into(),
+                    offset: linked.root.offset,
+                }),
+                remove,
             }));
             if expanded {
                 walk_contents(node, depth + 1, inner, filter, folding, out);
@@ -384,6 +402,7 @@ fn walk(
                 offset: node.offset,
                 units: node.units.clone(),
                 change: Change::of(&node.path.to_string(), field.as_written(), versions),
+                remove,
             }));
             walk_contents(node, depth + 1, inner, filter, folding, out);
         }
@@ -395,10 +414,7 @@ fn matrix_lines(rows: &[FormNode], versions: Option<&Versions>) -> Vec<MatrixLin
     rows.iter()
         .map(|row| {
             let (values, error) = match &row.kind {
-                NodeKind::Value(field) => (
-                    field.value.split_whitespace().map(str::to_string).collect(),
-                    field.error.clone(),
-                ),
+                NodeKind::Value(field) => (field.value.split_whitespace().map(str::to_string).collect(), field.error.clone()),
                 NodeKind::Section { .. } => (Vec::new(), None),
             };
             MatrixLine {
@@ -411,20 +427,16 @@ fn matrix_lines(rows: &[FormNode], versions: Option<&Versions>) -> Vec<MatrixLin
         .collect()
 }
 
-/// The rows of what an element holds: its attributes and elements, then the contents of the file
-/// it links to. `above` is the element's.
-fn walk_contents(
-    node: &FormNode,
-    depth: usize,
-    above: Above,
-    filter: &str,
-    folding: &Folding,
-    out: &mut Vec<Row>,
-) {
+/// The rows of what an element holds: its attributes and elements, with the buttons that add to
+/// its lists, then the contents of the file it links to. `above` is the element's.
+fn walk_contents(node: &FormNode, depth: usize, above: Above, filter: &str, folding: &Folding, out: &mut Vec<Row>) {
     push_attributes(node, depth, above, filter, folding, out);
     if let NodeKind::Section { children } = &node.kind {
-        for child in children {
+        let above = Above { lists: &node.lists, ..above };
+        push_adds(node, None, depth, above, filter, out);
+        for (i, child) in children.iter().enumerate() {
             walk(child, depth, above, filter, folding, out);
+            push_adds(node, Some(i), depth, above, filter, out);
         }
     }
     if let Some(linked) = node.linked.as_deref() {
@@ -433,15 +445,56 @@ fn walk_contents(
         let inside = Above {
             document: &document,
             key_prefix: &key_prefix,
+            lists: &[],
             ..above
         };
         match &linked.root.kind {
-            NodeKind::Section { .. } => {
-                walk_contents(&linked.root, depth, inside, filter, folding, out)
-            }
+            NodeKind::Section { .. } => walk_contents(&linked.root, depth, inside, filter, folding, out),
             // A root holding a value is a row of its own
             NodeKind::Value(_) => walk(&linked.root, depth, inside, filter, folding, out),
         }
+    }
+}
+
+/// The buttons that add items to the lists in `node` that come after its child `after` (see
+/// [`List::after`]); `above` is that of `node`'s children. With a filter, only those of lists whose
+/// name matches show, unless `node`'s name matches.
+fn push_adds(node: &FormNode, after: Option<usize>, depth: usize, above: Above, filter: &str, out: &mut Vec<Row>) {
+    let NodeKind::Section { children } = &node.kind else {
+        return;
+    };
+    for list in node.lists.iter().filter(|l| l.after == after) {
+        let name = &list.name;
+        if !filter.is_empty() && !above.matched && !name.to_lowercase().contains(filter) {
+            continue;
+        }
+        let add = match (list.why_not_add(), &list.new_item, list.after) {
+            (Some(why), ..) => Err(why),
+            (None, Some(new), _) => Ok((
+                EditOp::InsertElement {
+                    path: node.path.clone(),
+                    after: new.follows.clone(),
+                    element: new.element.clone(),
+                },
+                format!("Add a new {name}, as the schema describes it"),
+            )),
+            (None, None, Some(last)) => Ok((
+                EditOp::InsertCopy {
+                    path: children[last].path.clone(),
+                },
+                format!("Add a copy of {name} [{}]", list.count - 1),
+            )),
+            (None, None, None) => continue,
+        };
+        out.push(Row::Add(AddRow {
+            place: above.place(node),
+            depth,
+            name: name.clone(),
+            unused: above.unused,
+            add,
+            // The new item is the list's last
+            new_key: format!("{}{}", above.key_prefix, node.path.child(name, list.count)),
+        }));
     }
 }
 
@@ -450,19 +503,11 @@ fn walk_contents(
 ///
 /// A section showing the file it links to names the file in its title, so the attribute giving the
 /// link doesn't show, unless it has a problem. Until the file shows, the attribute does, to fix.
-fn push_attributes(
-    node: &FormNode,
-    depth: usize,
-    above: Above,
-    filter: &str,
-    folding: &Folding,
-    out: &mut Vec<Row>,
-) {
+fn push_attributes(node: &FormNode, depth: usize, above: Above, filter: &str, folding: &Folding, out: &mut Vec<Row>) {
     let versions = folding.versions.get(above.document);
     let shown_link = node.linked.as_ref().and(node.link.as_deref());
     let shown = node.attributes.iter().filter(|a| {
-        (!gives_link(a, shown_link) || a.field.error.is_some() || a.warning.is_some())
-            && (filter.is_empty() || above.matched || attribute_matches(a, filter))
+        (!gives_link(a, shown_link) || a.field.error.is_some() || a.warning.is_some()) && (filter.is_empty() || above.matched || attribute_matches(a, filter))
     });
     out.extend(shown.map(|attribute| {
         let key = format!("{}/@{}", node.path, attribute.name);
@@ -480,18 +525,12 @@ fn push_attributes(
 
 /// Whether `attribute` is the `href` that gives `link` (see [`FormNode::link`]).
 fn gives_link(attribute: &AttributeField, link: Option<&str>) -> bool {
-    link.is_some_and(|href| {
-        attribute.name.rsplit(':').next() == Some("href") && attribute.field.value.trim() == href
-    })
+    link.is_some_and(|href| attribute.name.rsplit(':').next() == Some("href") && attribute.field.value.trim() == href)
 }
 
 /// Adds a step to a copy path, which is empty for the root.
 fn join(path: &str, step: &str) -> String {
-    if path.is_empty() {
-        step.to_string()
-    } else {
-        format!("{path}.{step}")
-    }
+    if path.is_empty() { step.to_string() } else { format!("{path}.{step}") }
 }
 
 /// An element's step of a copy path: its name, with its index when it's an item of a list.
@@ -522,21 +561,11 @@ fn subtree_matches(node: &FormNode, filter: &str) -> bool {
 /// Whether anything an element holds matches: its elements, or those of the file it links to.
 fn contents_match(node: &FormNode, filter: &str) -> bool {
     let own = matches!(&node.kind, NodeKind::Section { children } if children.iter().any(|c| subtree_matches(c, filter)));
-    own || node
-        .linked
-        .as_deref()
-        .is_some_and(|linked| match &linked.root.kind {
-            // The root's attributes show in the linking section
-            NodeKind::Section { .. } => {
-                linked
-                    .root
-                    .attributes
-                    .iter()
-                    .any(|a| attribute_matches(a, filter))
-                    || contents_match(&linked.root, filter)
-            }
-            NodeKind::Value(_) => subtree_matches(&linked.root, filter),
-        })
+    own || node.linked.as_deref().is_some_and(|linked| match &linked.root.kind {
+        // The root's attributes show in the linking section
+        NodeKind::Section { .. } => linked.root.attributes.iter().any(|a| attribute_matches(a, filter)) || contents_match(&linked.root, filter),
+        NodeKind::Value(_) => subtree_matches(&linked.root, filter),
+    })
 }
 
 /// The keys of all sections below the root, for expanding or collapsing them all.
@@ -574,12 +603,7 @@ pub(crate) fn sections_with_problems(form: &Form) -> Vec<String> {
         ancestors.pop();
     }
     /// The sections in what `node`, the last of the `ancestors`, holds
-    fn collect_contents(
-        node: &FormNode,
-        prefix: &str,
-        ancestors: &mut Vec<String>,
-        out: &mut Vec<String>,
-    ) {
+    fn collect_contents(node: &FormNode, prefix: &str, ancestors: &mut Vec<String>, out: &mut Vec<String>) {
         if let NodeKind::Section { children } = &node.kind {
             for child in children {
                 collect(child, prefix, ancestors, out);
@@ -607,9 +631,7 @@ pub(crate) fn sections_with_problems(form: &Form) -> Vec<String> {
 }
 
 fn has_problem(node: &FormNode) -> bool {
-    node.has_error()
-        || !node.notes.is_empty()
-        || node.attributes.iter().any(|a| a.warning.is_some())
+    node.has_error() || !node.notes.is_empty() || node.attributes.iter().any(|a| a.warning.is_some())
 }
 
 #[cfg(test)]
@@ -618,10 +640,7 @@ mod tests {
 
     use super::*;
 
-    fn folded<'a>(
-        expanded: &'a HashMap<String, bool>,
-        versions: &'a HashMap<Arc<str>, Versions>,
-    ) -> Folding<'a> {
+    fn folded<'a>(expanded: &'a HashMap<String, bool>, versions: &'a HashMap<Arc<str>, Versions>) -> Folding<'a> {
         Folding {
             filter: "",
             expanded,
@@ -630,13 +649,15 @@ mod tests {
         }
     }
 
+    /// The copy paths of the rows, other than those that add to lists.
     fn copy_paths(rows: &[Row]) -> Vec<Option<&str>> {
         rows.iter()
-            .map(|row| match row {
-                Row::Section(row) => row.copy_path.as_deref(),
-                Row::Value(row) => row.copy_path.as_deref(),
-                Row::Attribute(row) => Some(row.copy_path.as_str()),
-                Row::Matrix(row) => row.copy_path.as_deref(),
+            .filter_map(|row| match row {
+                Row::Section(row) => Some(row.copy_path.as_deref()),
+                Row::Value(row) => Some(row.copy_path.as_deref()),
+                Row::Attribute(row) => Some(Some(row.copy_path.as_str())),
+                Row::Matrix(row) => Some(row.copy_path.as_deref()),
+                Row::Add(_) => None,
             })
             .collect()
     }
@@ -692,16 +713,8 @@ mod tests {
 
     #[test]
     fn linked_files_show_in_the_section_linking_to_them() {
-        let mut form = build_form(
-            r#"<settings><numerics href="numerics.xml"/></settings>"#,
-            None,
-        )
-        .unwrap();
-        let numerics = build_form(
-            r#"<numerics version="2"><picard><n_iter>1</n_iter></picard></numerics>"#,
-            None,
-        )
-        .unwrap();
+        let mut form = build_form(r#"<settings><numerics href="numerics.xml"/></settings>"#, None).unwrap();
+        let numerics = build_form(r#"<numerics version="2"><picard><n_iter>1</n_iter></picard></numerics>"#, None).unwrap();
         // The file's values as saved differ from the form's in `n_iter`
         let saved = numerics_values("<numerics><picard><n_iter>5</n_iter></picard></numerics>");
         let versions = HashMap::from([(
@@ -724,10 +737,7 @@ mod tests {
         };
 
         // Until the file shows, the link does, to fix
-        assert_eq!(
-            paths(&form, ""),
-            [None, Some("numerics".into()), Some("numerics.@href".into())]
-        );
+        assert_eq!(paths(&form, ""), [None, Some("numerics".into()), Some("numerics.@href".into())]);
 
         let NodeKind::Section { children } = &mut form.root.kind else {
             panic!("the root holds elements");
@@ -749,11 +759,9 @@ mod tests {
             .map(|row| match row {
                 Row::Section(row) => (&*row.place.document, row.place.key.clone()),
                 Row::Value(row) => (&*row.place.document, row.place.key.clone()),
-                Row::Attribute(row) => (
-                    &*row.place.document,
-                    format!("{}/@{}", row.place.key, row.attribute.name),
-                ),
+                Row::Attribute(row) => (&*row.place.document, format!("{}/@{}", row.place.key, row.attribute.name)),
                 Row::Matrix(row) => (&*row.place.document, row.place.key.clone()),
+                Row::Add(row) => (&*row.place.document, format!("add {}", row.name)),
             })
             .collect();
         assert_eq!(
@@ -761,18 +769,9 @@ mod tests {
             [
                 ("main", "/settings".to_string()),
                 ("main", "/settings/numerics".to_string()),
-                (
-                    "numerics.xml",
-                    "/settings/numerics|/numerics/@version".to_string()
-                ),
-                (
-                    "numerics.xml",
-                    "/settings/numerics|/numerics/picard".to_string()
-                ),
-                (
-                    "numerics.xml",
-                    "/settings/numerics|/numerics/picard/n_iter".to_string()
-                ),
+                ("numerics.xml", "/settings/numerics|/numerics/@version".to_string()),
+                ("numerics.xml", "/settings/numerics|/numerics/picard".to_string()),
+                ("numerics.xml", "/settings/numerics|/numerics/picard/n_iter".to_string()),
             ]
         );
         assert_eq!(
@@ -788,22 +787,13 @@ mod tests {
         let Row::Section(numerics) = &shown[1] else {
             panic!("numerics is a section");
         };
-        let file = numerics
-            .linked_file
-            .as_ref()
-            .expect("the title names the file");
-        assert_eq!(
-            (&*file.href, &*file.document),
-            ("numerics.xml", "numerics.xml")
-        );
+        let file = numerics.linked_file.as_ref().expect("the title names the file");
+        assert_eq!((&*file.href, &*file.document), ("numerics.xml", "numerics.xml"));
         let Row::Value(n_iter) = &shown[4] else {
             panic!("n_iter is a value");
         };
         assert_eq!(n_iter.change, Change::Unsaved);
-        assert_eq!(
-            section_keys(&form),
-            ["/settings/numerics", "/settings/numerics|/numerics/picard"]
-        );
+        assert_eq!(section_keys(&form), ["/settings/numerics", "/settings/numerics|/numerics/picard"]);
 
         // Searching finds what's in the linked file, without the attributes that don't match
         assert_eq!(
@@ -815,14 +805,7 @@ mod tests {
                 Some("numerics.picard.n_iter".into()),
             ]
         );
-        assert_eq!(
-            paths(&form, "version"),
-            [
-                None,
-                Some("numerics".into()),
-                Some("numerics.@version".into())
-            ]
-        );
+        assert_eq!(paths(&form, "version"), [None, Some("numerics".into()), Some("numerics.@version".into())]);
 
         // A link with a problem shows, to show the problem
         let NodeKind::Section { children } = &mut form.root.kind else {
@@ -830,6 +813,106 @@ mod tests {
         };
         children[0].attributes[0].warning = Some("Not in the schema".into());
         assert!(paths(&form, "").contains(&Some("numerics.@href".into())));
+    }
+
+    #[test]
+    fn lists_have_buttons_to_add_and_remove_items() {
+        let xsd = r#"<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+            <xs:element name="settings">
+                <xs:complexType>
+                    <xs:sequence>
+                        <xs:element name="first" type="xs:int"/>
+                        <xs:element name="time" type="xs:double" maxOccurs="unbounded"/>
+                        <xs:element name="window" minOccurs="0" maxOccurs="2">
+                            <xs:complexType>
+                                <xs:sequence>
+                                    <xs:element name="start" type="xs:double"/>
+                                </xs:sequence>
+                            </xs:complexType>
+                        </xs:element>
+                        <xs:element name="last" type="xs:int"/>
+                    </xs:sequence>
+                </xs:complexType>
+            </xs:element>
+        </xs:schema>"#;
+        let schema = Schema::parse(xsd).unwrap();
+        let (expanded, versions) = (HashMap::new(), HashMap::new());
+        let shown = |xml: &str, filter| {
+            let form = build_form(xml, Some(&schema)).unwrap();
+            let folding = Folding {
+                filter,
+                ..folded(&expanded, &versions)
+            };
+            rows(&form, &"main".into(), &folding)
+        };
+        /// Each row's key, with what it removes or adds
+        fn describe(row: &Row) -> String {
+            let remove = |key: &str, remove: &Remove| match remove {
+                Some(Ok(EditOp::RemoveElement { path })) => format!("{key} -{path}"),
+                Some(Err(why)) => format!("{key} ({why})"),
+                Some(Ok(op)) => panic!("removed with {op:?}"),
+                None => key.to_string(),
+            };
+            match row {
+                Row::Section(row) => remove(&row.place.key, &row.remove),
+                Row::Value(row) => remove(&row.place.key, &row.remove),
+                Row::Add(row) => match &row.add {
+                    Ok((EditOp::InsertCopy { path }, _)) => {
+                        format!("add {} +{path} {}", row.name, row.new_key)
+                    }
+                    Ok((EditOp::InsertElement { path, after, .. }, _)) => {
+                        format!("add {} +{path} after {after:?} {}", row.name, row.new_key)
+                    }
+                    Ok((op, _)) => panic!("added with {op:?}"),
+                    Err(why) => format!("add {} ({why})", row.name),
+                },
+                Row::Attribute(_) | Row::Matrix(_) => panic!("no attributes or matrices"),
+            }
+        }
+        let describe = |rows: Vec<Row>| rows.iter().map(describe).collect::<Vec<_>>();
+
+        // The first item can't be removed, and windows go after it, as the schema puts them
+        let xml = "<settings><first>1</first><time>1</time><last>2</last></settings>";
+        assert_eq!(
+            describe(shown(xml, "")),
+            [
+                "/settings",
+                "/settings/first",
+                "/settings/time (The schema needs at least 1 <time> element)",
+                "add time +/settings/time /settings/time[2]",
+                "add window +/settings after [\"first\", \"time\"] /settings/window",
+                "/settings/last",
+            ]
+        );
+
+        let xml = "<settings><first>1</first><time>1</time><time>2</time>\
+            <window><start>0</start></window><window><start>1</start></window><last>2</last></settings>";
+        assert_eq!(
+            describe(shown(xml, "")),
+            [
+                "/settings",
+                "/settings/first",
+                "/settings/time -/settings/time",
+                "/settings/time[2] -/settings/time[2]",
+                "add time +/settings/time[2] /settings/time[3]",
+                "/settings/window -/settings/window",
+                "/settings/window/start",
+                "/settings/window[2] -/settings/window[2]",
+                "/settings/window[2]/start",
+                "add window (The schema allows at most 2 <window> elements)",
+                "/settings/last",
+            ]
+        );
+        // Filtered, a list's button shows with its items
+        assert_eq!(
+            describe(shown(xml, "time")),
+            [
+                "/settings",
+                "/settings/time -/settings/time",
+                "/settings/time[2] -/settings/time[2]",
+                "add time +/settings/time[2] /settings/time[3]",
+            ]
+        );
     }
 
     fn numerics_values(xml: &str) -> Shared<Values> {
@@ -872,11 +955,7 @@ mod tests {
         let Row::Matrix(m) = &shown[1] else {
             panic!("m is a matrix");
         };
-        let lines: Vec<(Vec<&str>, &[Change])> = m
-            .lines
-            .iter()
-            .map(|l| (l.values.iter().map(String::as_str).collect(), &*l.changes))
-            .collect();
+        let lines: Vec<(Vec<&str>, &[Change])> = m.lines.iter().map(|l| (l.values.iter().map(String::as_str).collect(), &*l.changes)).collect();
         use Change::{None as Same, Unsaved};
         assert_eq!(
             lines,

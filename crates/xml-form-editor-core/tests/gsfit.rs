@@ -10,6 +10,34 @@ const TIME_SLICES_XSD: &str = include_str!("../../../example_data/time_slices.xs
 const OVERALL_XML: &str = include_str!("../../../example_data/overall_code_settings.xml");
 const OVERALL_XSD: &str = include_str!("../../../example_data/overall_code_settings.xsd");
 
+/// A time-slices file of its own, to test the lists in, as the one in `example_data` changes as the
+/// form is tried out on it.
+const TIME_SLICES: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<time_slices xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="time_slices.xsd">
+    <method>times</method>
+    <times>
+        <time>0.050</time>
+        <time>0.100</time>
+        <time>0.150</time>
+        <time>0.200</time>
+    </times>
+    <regular>
+        <time_start>0.0</time_start>
+        <time_end>0.3</time_end>
+        <time_step>5.0e-3</time_step>
+    </regular>
+    <averaging_window>1.0e-3</averaging_window>
+    <initial_guess>previous</initial_guess>
+    <stop_on_failure>false</stop_on_failure>
+    <override>
+        <time_start>0.0</time_start>
+        <time_end>0.02</time_end>
+        <n_iter_max>500</n_iter_max>
+        <grad_shafranov_deviation_tolerance>1.0e-4</grad_shafranov_deviation_tolerance>
+    </override>
+</time_slices>
+"#;
+
 fn form(xml: &str) -> Form {
     let schema = Schema::parse(XSD).unwrap();
     build_form(xml, Some(&schema)).unwrap()
@@ -85,8 +113,8 @@ fn the_examples_are_valid() {
 
 #[test]
 fn time_slices_are_lists_to_add_to_and_remove_from() {
-    // As checked out on Linux, whatever Git did on this computer
-    let xml = &TIME_SLICES_XML.replace("\r\n", "\n");
+    let xml = TIME_SLICES;
+    valid(xml, TIME_SLICES_XSD);
     let schema = Schema::parse(TIME_SLICES_XSD).unwrap();
     let form = build_form(xml, Some(&schema)).unwrap();
     let lists = |node: &FormNode| -> Vec<(String, usize)> { node.lists.iter().map(|l| (l.name.clone(), l.count)).collect() };

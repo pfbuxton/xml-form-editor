@@ -2,19 +2,17 @@
 //!
 //! The form shows only what the document contains. Optional elements it leaves out don't appear,
 //! and required ones it leaves out are reported, because the form edits values and never adds or
-//! removes elements, other than the rows of a matrix (see [`Matrix`]).
+//! removes elements, other than the items of lists (see [`List`]) and the rows of a matrix (see
+//! [`Matrix`]).
 
 use std::collections::HashMap;
 
 use roxmltree::Node;
 
-use crate::schema::{AttributeDecl, ChildDecl, ElementContent, ElementDecl, Schema};
+use crate::schema::{AttributeDecl, ChildDecl, ElementContent, ElementDecl, MAX_DEPTH, Schema};
 use crate::simple::SimpleInfo;
 use crate::text::Utf16Offsets;
-use crate::xml::{
-    Path, XSI_NS, XmlError, attribute_namespace, is_nil, local_name, parse, scan_start_tag,
-    schema_location_of,
-};
+use crate::xml::{Path, XSI_NS, XmlError, attribute_namespace, is_nil, local_name, parse, scan_start_tag, schema_location_of};
 
 /// A document as the form shows it.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -52,6 +50,77 @@ pub struct FormNode {
     pub linked: Option<Box<Linked>>,
     /// Set when the element is a section holding a matrix, whose elements are its rows
     pub matrix: Option<Matrix>,
+    /// The lists in the section, whose items the form adds and removes
+    pub lists: Vec<List>,
+}
+
+/// A list in a section: an element the schema allows more than one of there, or that there's
+/// more than one of. Its items are numbered (see [`FormNode::index`]), and the form adds and
+/// removes them, as many as the schema allows.
+///
+/// A new item is a copy of the last, or for an empty list, the item the schema describes (see
+/// [`NewItem`]). Without a schema, the form knows of a list only while it has more than one item.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct List {
+    /// The items' local name
+    pub name: String,
+    pub count: usize,
+    /// How few items the schema allows
+    pub min: u32,
+    /// How many items the schema allows; `None` for unbounded, or without a schema
+    pub max: Option<u32>,
+    /// Where the list is among the section's children: after the child with this index, which is
+    /// its last item, or for an empty list, the last of the elements the schema puts before it.
+    /// `None` when it comes first.
+    pub after: Option<usize>,
+    /// For an empty list, which has no item to copy, the item to add
+    pub new_item: Option<NewItem>,
+}
+
+impl List {
+    /// Why an item can't be added, if it can't.
+    pub fn why_not_add(&self) -> Option<String> {
+        if let Some(max) = self.max.filter(|&max| self.count >= max as usize) {
+            return Some(format!("The schema allows at most {}", elements(max as usize, &self.name)));
+        }
+        (self.count == 0 && self.new_item.is_none()).then(|| format!("There's no <{}> to copy", self.name))
+    }
+
+    /// Why an item can't be removed, if it can't.
+    pub fn why_not_remove(&self) -> Option<String> {
+        (self.count <= self.min as usize).then(|| format!("The schema needs at least {}", elements(self.min as usize, &self.name)))
+    }
+}
+
+/// `n` elements called `name`, in words: `1 <time> element`.
+fn elements(n: usize, name: &str) -> String {
+    let plural = if n == 1 { "" } else { "s" };
+    format!("{n} <{name}> element{plural}")
+}
+
+/// The first item of a list (see [`List::new_item`]).
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct NewItem {
+    pub element: NewElement,
+    /// The elements the schema puts before the list, which the item goes after
+    pub follows: Vec<String>,
+}
+
+/// An element to add, as the schema describes it: with the attributes and elements it requires,
+/// and the values they start with (see [`SimpleInfo::default_value`]).
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct NewElement {
+    pub name: String,
+    /// Names and values
+    pub attributes: Vec<(String, String)>,
+    pub content: NewContent,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum NewContent {
+    Text(String),
+    /// Elements; none for an empty element
+    Elements(Vec<NewElement>),
 }
 
 /// What makes a section a matrix: the one element its type allows may repeat, and holds a list of
@@ -104,10 +173,7 @@ pub struct Linked {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-#[allow(
-    clippy::large_enum_variant,
-    reason = "most nodes are values, so boxing them would cost more than it saves"
-)]
+#[allow(clippy::large_enum_variant, reason = "most nodes are values, so boxing them would cost more than it saves")]
 pub enum NodeKind {
     /// An element holding other elements
     Section { children: Vec<FormNode> },
@@ -193,13 +259,7 @@ impl Note {
 }
 
 impl Field {
-    fn new(
-        value: String,
-        nil: bool,
-        nillable: bool,
-        ty: Option<SimpleInfo>,
-        fixed: Option<String>,
-    ) -> Field {
+    fn new(value: String, nil: bool, nillable: bool, ty: Option<SimpleInfo>, fixed: Option<String>) -> Field {
         let mut field = Field {
             value,
             nil,
@@ -209,9 +269,7 @@ impl Field {
             error: None,
         };
         field.error = if field.nil {
-            (!field.nillable).then(|| {
-                "xsi:nil is set, but the schema doesn't allow this element to be nil".to_string()
-            })
+            (!field.nillable).then(|| "xsi:nil is set, but the schema doesn't allow this element to be nil".to_string())
         } else {
             field.check(&field.value)
         };
@@ -230,9 +288,7 @@ impl Field {
 
     /// The value as it would be written: whitespace handled as its type specifies.
     pub fn normalize(&self, value: &str) -> String {
-        self.ty
-            .as_ref()
-            .map_or_else(|| value.to_string(), |ty| ty.normalize(value))
+        self.ty.as_ref().map_or_else(|| value.to_string(), |ty| ty.normalize(value))
     }
 
     /// Why `value` isn't valid for this field, or `None` when it is.
@@ -307,10 +363,7 @@ fn count_problems(node: &FormNode, problems: &mut Problems) {
 pub fn values(xml: &str) -> Result<HashMap<String, Option<String>>, XmlError> {
     fn collect(node: &FormNode, out: &mut HashMap<String, Option<String>>) {
         for attribute in &node.attributes {
-            out.insert(
-                format!("{}/@{}", node.path, attribute.name),
-                attribute.field.as_written(),
-            );
+            out.insert(format!("{}/@{}", node.path, attribute.name), attribute.field.as_written());
         }
         match &node.kind {
             NodeKind::Value(field) => {
@@ -340,9 +393,7 @@ pub fn build_form(xml: &str, schema: Option<&Schema>) -> Result<Form, XmlError> 
             Some(decl) => builder.typed(root, path, decl),
             None => {
                 let mut node = builder.untyped(root, path);
-                node.notes.push(Note::error(format!(
-                    "The schema doesn't declare a <{name}> element"
-                )));
+                node.notes.push(Note::error(format!("The schema doesn't declare a <{name}> element")));
                 node
             }
         },
@@ -363,18 +414,13 @@ struct Builder<'a> {
 impl Builder<'_> {
     fn blank(&self, node: Node, path: Path, doc: Option<String>) -> FormNode {
         let start = node.range().start;
-        let name = scan_start_tag(self.src, start).map_or_else(
-            || node.tag_name().name().to_string(),
-            |tag| self.src[tag.name].to_string(),
-        );
+        let name = scan_start_tag(self.src, start).map_or_else(|| node.tag_name().name().to_string(), |tag| self.src[tag.name].to_string());
         FormNode {
             path,
             name,
             index: None,
             doc,
-            kind: NodeKind::Section {
-                children: Vec::new(),
-            },
+            kind: NodeKind::Section { children: Vec::new() },
             attributes: Vec::new(),
             notes: Vec::new(),
             variant: Variant::Plain,
@@ -384,6 +430,7 @@ impl Builder<'_> {
             link: None,
             linked: None,
             matrix: None,
+            lists: Vec::new(),
         }
     }
 
@@ -395,38 +442,28 @@ impl Builder<'_> {
         out.units = decl.units.clone();
         match schema.content(&decl.ty) {
             ElementContent::Text(info) => {
-                out.kind = NodeKind::Value(self.value(
-                    node,
-                    Some(info),
-                    decl.nillable,
-                    decl.fixed.clone(),
-                ));
+                out.kind = NodeKind::Value(self.value(node, Some(info), decl.nillable, decl.fixed.clone()));
                 if node.children().any(|c| c.is_element()) {
-                    out.notes
-                        .push(Note::error("Should hold a value, but holds elements"));
+                    out.notes.push(Note::error("Should hold a value, but holds elements"));
                 }
             }
-            ElementContent::Elements {
-                children: decls,
-                open,
-            } => {
+            ElementContent::Elements { children: decls, open } => {
                 let children = self.children(node, &out.path, &decls, open, &mut out.notes);
                 out.matrix = matrix(schema, &decls, open, &children);
                 if out.matrix.is_some() {
                     out.notes.extend(uneven_rows(&children));
                     out.units = out.units.or_else(|| decls[0].decl.units.clone());
+                } else {
+                    out.lists = lists(Some(schema), &decls, &children);
                 }
                 out.kind = NodeKind::Section { children };
             }
             ElementContent::Empty => {
                 let children = self.children(node, &out.path, &[], false, &mut out.notes);
+                out.lists = lists(Some(schema), &[], &children);
                 out.kind = NodeKind::Section { children };
-                if node
-                    .children()
-                    .any(|c| c.is_text() && c.text().is_some_and(|t| !t.trim().is_empty()))
-                {
-                    out.notes
-                        .push(Note::warning("Should be empty, but holds text"));
+                if node.children().any(|c| c.is_text() && c.text().is_some_and(|t| !t.trim().is_empty())) {
+                    out.notes.push(Note::warning("Should be empty, but holds text"));
                 }
             }
             ElementContent::Untyped => {
@@ -460,6 +497,7 @@ impl Builder<'_> {
                 })
                 .collect();
             number_items(&mut children, |name| counts[name] > 1);
+            out.lists = lists(None, &[], &children);
             out.kind = NodeKind::Section { children };
         } else {
             // Nillable when it's nil already, so that it can be given a value
@@ -470,14 +508,7 @@ impl Builder<'_> {
     }
 
     /// The children of an element whose content model is `decls`, in document order.
-    fn children(
-        &self,
-        node: Node,
-        path: &Path,
-        decls: &[ChildDecl],
-        open: bool,
-        notes: &mut Vec<Note>,
-    ) -> Vec<FormNode> {
+    fn children(&self, node: Node, path: &Path, decls: &[ChildDecl], open: bool, notes: &mut Vec<Note>) -> Vec<FormNode> {
         let mut counts: HashMap<&str, usize> = HashMap::new();
         let mut children = Vec::new();
         for child in node.children().filter(Node::is_element) {
@@ -499,61 +530,40 @@ impl Builder<'_> {
             let name = &d.decl.name;
             let count = counts.get(name.as_str()).copied().unwrap_or(0);
             if count < d.min as usize {
-                notes.push(Note::error(if count == 0 {
-                    format!(
-                        "Missing <{name}>, which the schema requires. Add it in the text editor."
-                    )
+                // The form adds the items of a list
+                let list = d.max.is_none_or(|max| max > 1);
+                notes.push(Note::error(if count == 0 && !list {
+                    format!("Missing <{name}>, which the schema requires. Add it in the text editor.")
+                } else if count == 0 {
+                    format!("Missing <{name}>, which the schema requires")
                 } else {
-                    format!(
-                        "Needs at least {} <{name}> elements, but has {count}",
-                        d.min
-                    )
+                    format!("Needs at least {} <{name}> elements, but has {count}", d.min)
                 }));
             }
             if let Some(max) = d.max.filter(|&max| count > max as usize) {
-                notes.push(Note::warning(format!(
-                    "Allows at most {max} <{name}> elements, but has {count}"
-                )));
+                notes.push(Note::warning(format!("Allows at most {max} <{name}> elements, but has {count}")));
             }
         }
         number_items(&mut children, |name| {
-            counts[name] > 1
-                || decls
-                    .iter()
-                    .find(|d| d.decl.name == name)
-                    .is_some_and(|d| d.max.is_none_or(|max| max > 1))
+            counts[name] > 1 || decls.iter().find(|d| d.decl.name == name).is_some_and(|d| d.max.is_none_or(|max| max > 1))
         });
         mark_variants(&mut children);
         children
     }
 
-    fn value(
-        &self,
-        node: Node,
-        ty: Option<SimpleInfo>,
-        nillable: bool,
-        fixed: Option<String>,
-    ) -> Field {
+    fn value(&self, node: Node, ty: Option<SimpleInfo>, nillable: bool, fixed: Option<String>) -> Field {
         let nil = is_nil(node);
         let value = if nil {
             String::new()
         } else {
-            node.children()
-                .filter(|c| c.is_text())
-                .filter_map(|c| c.text())
-                .collect()
+            node.children().filter(|c| c.is_text()).filter_map(|c| c.text()).collect()
         };
         Field::new(value, nil, nillable, ty, fixed)
     }
 
     /// The attributes an element has, except namespace declarations and `xsi:` attributes. With
     /// the declarations from the schema, missing required attributes are added to `notes`.
-    fn attributes(
-        &self,
-        node: Node,
-        declared: Option<&[(&AttributeDecl, bool)]>,
-        notes: &mut Vec<Note>,
-    ) -> Vec<AttributeField> {
+    fn attributes(&self, node: Node, declared: Option<&[(&AttributeDecl, bool)]>, notes: &mut Vec<Note>) -> Vec<AttributeField> {
         let Some(tag) = scan_start_tag(self.src, node.range().start) else {
             return Vec::new();
         };
@@ -573,27 +583,14 @@ impl Builder<'_> {
                 None => node.attribute(local),
             };
             // Declarations here are for unqualified attributes
-            let decl = declared.and_then(|declared| {
-                declared
-                    .iter()
-                    .find(|(a, _)| a.name == local && namespace.is_none())
-            });
-            let ty = decl
-                .zip(self.schema)
-                .map(|((a, _), schema)| schema.simple_info(&a.ty));
+            let decl = declared.and_then(|declared| declared.iter().find(|(a, _)| a.name == local && namespace.is_none()));
+            let ty = decl.zip(self.schema).map(|((a, _), schema)| schema.simple_info(&a.ty));
             out.push(AttributeField {
                 name: qname.to_string(),
                 doc: decl.and_then(|(a, _)| a.doc.clone()),
-                field: Field::new(
-                    value.unwrap_or_default().to_string(),
-                    false,
-                    false,
-                    ty,
-                    decl.and_then(|(a, _)| a.fixed.clone()),
-                ),
+                field: Field::new(value.unwrap_or_default().to_string(), false, false, ty, decl.and_then(|(a, _)| a.fixed.clone())),
                 units: decl.and_then(|(a, _)| a.units.clone()),
-                warning: (declared.is_some() && decl.is_none())
-                    .then(|| "Not in the schema".to_string()),
+                warning: (declared.is_some() && decl.is_none()).then(|| "Not in the schema".to_string()),
             });
         }
         for (decl, required) in declared.unwrap_or_default() {
@@ -619,30 +616,18 @@ fn next_index<'a>(counts: &mut HashMap<&'a str, usize>, name: &'a str) -> usize 
 fn link(attributes: &[AttributeField]) -> Option<String> {
     let href = attributes.iter().find(|a| local_name(&a.name) == "href")?;
     let href = href.field.value.trim();
-    href.to_ascii_lowercase()
-        .ends_with(".xml")
-        .then(|| href.to_string())
+    href.to_ascii_lowercase().ends_with(".xml").then(|| href.to_string())
 }
 
 /// The matrix a section holds (see [`Matrix`]), when `decls`, its type's content model, allows one
 /// element, which may repeat and holds a list of numbers, and `children` are all such elements,
 /// with no attributes, which a grid couldn't show.
-fn matrix(
-    schema: &Schema,
-    decls: &[ChildDecl],
-    open: bool,
-    children: &[FormNode],
-) -> Option<Matrix> {
+fn matrix(schema: &Schema, decls: &[ChildDecl], open: bool, children: &[FormNode]) -> Option<Matrix> {
     let [row] = decls else {
         return None;
     };
     let decl = row.decl;
-    if open
-        || row.max.is_some_and(|max| max < 2)
-        || decl.nillable
-        || decl.fixed.is_some()
-        || !schema.attributes(&decl.ty).is_empty()
-    {
+    if open || row.max.is_some_and(|max| max < 2) || decl.nillable || decl.fixed.is_some() || !schema.attributes(&decl.ty).is_empty() {
         return None;
     }
     let ElementContent::Text(row_type) = schema.content(&decl.ty) else {
@@ -652,11 +637,9 @@ fn matrix(
         .item
         .as_ref()
         .is_some_and(|item| item.builtin.is_numeric() && !item.is_list() && !item.is_union());
-    let rows = children.iter().all(|child| {
-        child.path.name() == decl.name
-            && child.attributes.is_empty()
-            && matches!(child.kind, NodeKind::Value(_))
-    });
+    let rows = children
+        .iter()
+        .all(|child| child.path.name() == decl.name && child.attributes.is_empty() && matches!(child.kind, NodeKind::Value(_)));
     (numbers && rows).then(|| Matrix {
         row_name: decl.name.clone(),
         row_doc: decl.doc.clone(),
@@ -696,11 +679,7 @@ fn uneven_rows(rows: &[FormNode]) -> Option<Note> {
     }
     const SHOWN: usize = 5;
     let listed = if odd.len() > SHOWN {
-        format!(
-            "{}, and {} more rows differ",
-            odd[..SHOWN].join(", "),
-            odd.len() - SHOWN
-        )
+        format!("{}, and {} more rows differ", odd[..SHOWN].join(", "), odd.len() - SHOWN)
     } else {
         odd.join(", ")
     };
@@ -718,6 +697,97 @@ fn number_items(children: &mut [FormNode], is_list: impl Fn(&str) -> bool) {
     }
 }
 
+/// The lists in a section with these `children` (see [`List`]): those of the elements `decls`, its
+/// type's content model, that the schema allows more than one of, or there's more than one of, then
+/// any other element there's more than one of. These are the elements [`number_items`] numbers.
+fn lists(schema: Option<&Schema>, decls: &[ChildDecl], children: &[FormNode]) -> Vec<List> {
+    let count = |name: &str| children.iter().filter(|c| c.path.name() == name).count();
+    let last = |name: &str| children.iter().rposition(|c| c.path.name() == name);
+    let mut lists: Vec<List> = Vec::new();
+    for (i, d) in decls.iter().enumerate() {
+        let name = d.decl.name.as_str();
+        let count = count(name);
+        if count < 2 && d.max.is_some_and(|max| max < 2) {
+            continue;
+        }
+        let mut list = List {
+            name: name.to_string(),
+            count,
+            min: d.min,
+            max: d.max,
+            after: last(name),
+            new_item: None,
+        };
+        if let (0, Some(schema)) = (count, schema) {
+            // Where the schema puts it: after the elements before it
+            let follows: Vec<String> = decls[..i].iter().map(|d| d.decl.name.clone()).collect();
+            list.after = children.iter().rposition(|c| follows.iter().any(|name| name == c.path.name()));
+            let mut budget = MAX_NEW_ELEMENTS;
+            list.new_item = Some(NewItem {
+                element: new_element(schema, d.decl, 0, &mut budget),
+                follows,
+            });
+        }
+        lists.push(list);
+    }
+    for child in children {
+        let name = child.path.name();
+        let known = decls.iter().any(|d| d.decl.name == name) || lists.iter().any(|l| l.name == name);
+        let count = count(name);
+        if !known && count > 1 {
+            lists.push(List {
+                name: name.to_string(),
+                count,
+                min: 0,
+                max: None,
+                after: last(name),
+                new_item: None,
+            });
+        }
+    }
+    lists
+}
+
+/// How many elements a new item has at most, with those in it: plenty for any real schema, while
+/// stopping one whose every level requires many of the next.
+const MAX_NEW_ELEMENTS: usize = 1000;
+
+/// The element `decl` declares, as [`NewElement`] describes it. It and the elements in it take
+/// from `budget`, and those that it doesn't cover are left out.
+fn new_element(schema: &Schema, decl: &ElementDecl, depth: usize, budget: &mut usize) -> NewElement {
+    *budget = budget.saturating_sub(1);
+    let content = match schema.content(&decl.ty) {
+        ElementContent::Text(info) => NewContent::Text(decl.fixed.clone().or_else(|| info.default_value()).unwrap_or_default()),
+        // The depth stops types that contain themselves
+        ElementContent::Elements { children, .. } if depth < MAX_DEPTH => {
+            let mut elements = Vec::new();
+            for child in &children {
+                for _ in 0..child.min {
+                    if *budget == 0 {
+                        break;
+                    }
+                    elements.push(new_element(schema, child.decl, depth + 1, budget));
+                }
+            }
+            NewContent::Elements(elements)
+        }
+        _ => NewContent::Elements(Vec::new()),
+    };
+    let mut attributes: Vec<(String, String)> = Vec::new();
+    for (attribute, required) in schema.attributes(&decl.ty) {
+        // A type can declare an attribute again, as a derived type may
+        if required && !attributes.iter().any(|(name, _)| *name == attribute.name) {
+            let value = attribute.fixed.clone().or_else(|| schema.simple_info(&attribute.ty).default_value());
+            attributes.push((attribute.name.clone(), value.unwrap_or_default()));
+        }
+    }
+    NewElement {
+        name: decl.name.clone(),
+        attributes,
+        content,
+    }
+}
+
 /// Finds a selector among a section's children (see [`Variant`]) and marks the siblings it chooses between.
 fn mark_variants(children: &mut [FormNode]) {
     let names: Vec<String> = children.iter().map(|c| c.path.name().to_string()).collect();
@@ -726,20 +796,13 @@ fn mark_variants(children: &mut [FormNode]) {
             return None;
         };
         let ty = field.ty.as_ref()?;
-        let chooses = ty.enumeration.iter().any(|e| {
-            names
-                .iter()
-                .enumerate()
-                .any(|(j, name)| j != i && *name == e.value)
-        });
+        let chooses = ty
+            .enumeration
+            .iter()
+            .any(|e| names.iter().enumerate().any(|(j, name)| j != i && *name == e.value));
         chooses.then(|| {
             let options: Vec<String> = ty.enumeration.iter().map(|e| e.value.clone()).collect();
-            (
-                i,
-                child.path.name().to_string(),
-                field.display_value(),
-                options,
-            )
+            (i, child.path.name().to_string(), field.display_value(), options)
         })
     });
     let Some((index, selector, value, options)) = selector else {
@@ -752,9 +815,7 @@ fn mark_variants(children: &mut [FormNode]) {
             continue;
         }
         child.variant = if name == value {
-            Variant::Selected {
-                selector: selector.clone(),
-            }
+            Variant::Selected { selector: selector.clone() }
         } else {
             Variant::Unselected {
                 selector: selector.clone(),
@@ -773,10 +834,7 @@ mod tests {
         let NodeKind::Section { children } = &form.root.kind else {
             panic!("the root holds elements");
         };
-        children
-            .iter()
-            .map(|c| (c.name.as_str(), c.index))
-            .collect()
+        children.iter().map(|c| (c.name.as_str(), c.index)).collect()
     }
 
     #[test]
@@ -796,10 +854,7 @@ mod tests {
         </xs:schema>"#;
         let xml = r#"<settings><grid href=" ../default/grid.xml "/><notes href="notes.html"/></settings>"#;
         let schema = Schema::parse(xsd).unwrap();
-        for form in [
-            build_form(xml, Some(&schema)).unwrap(),
-            build_form(xml, None).unwrap(),
-        ] {
+        for form in [build_form(xml, Some(&schema)).unwrap(), build_form(xml, None).unwrap()] {
             let NodeKind::Section { children } = &form.root.kind else {
                 panic!("the root holds elements");
             };
@@ -891,12 +946,115 @@ mod tests {
 
         let empty = child(&form, "empty");
         assert!(empty.matrix.is_some() && empty.notes.is_empty());
+        // Its grid adds and removes its rows
+        assert!(m.lists.is_empty() && empty.lists.is_empty());
         let pair = child(&form, "pair").matrix.as_ref().unwrap();
         assert!(pair.allows_rows(2) && !pair.allows_rows(3) && !pair.allows_rows(0));
         // Not a matrix: it holds an element that isn't a row, or it's a value, or there's no schema
         assert_eq!(child(&form, "odd").matrix, None);
         assert_eq!(child(&form, "list").matrix, None);
         assert_eq!(child(&build_form(xml, None).unwrap(), "m").matrix, None);
+    }
+
+    #[test]
+    fn finds_lists_and_what_to_add_to_them() {
+        let xsd = r#"<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+            <xs:simpleType name="Positive">
+                <xs:restriction base="xs:double"><xs:minExclusive value="0"/></xs:restriction>
+            </xs:simpleType>
+            <xs:simpleType name="Pair">
+                <xs:restriction>
+                    <xs:simpleType><xs:list itemType="xs:int"/></xs:simpleType>
+                    <xs:length value="2"/>
+                </xs:restriction>
+            </xs:simpleType>
+            <xs:element name="r">
+                <xs:complexType>
+                    <xs:sequence>
+                        <xs:element name="single" type="xs:string"/>
+                        <xs:element name="time" type="xs:double" maxOccurs="unbounded"/>
+                        <xs:element name="window" minOccurs="0" maxOccurs="3">
+                            <xs:complexType>
+                                <xs:sequence>
+                                    <xs:element name="start" type="Positive"/>
+                                    <xs:element name="pair" type="Pair"/>
+                                    <xs:element name="label" type="xs:string"/>
+                                    <xs:element name="optional" type="xs:int" minOccurs="0"/>
+                                    <xs:element name="fixed" type="xs:string" fixed="yes"/>
+                                    <xs:element name="empty"><xs:complexType/></xs:element>
+                                </xs:sequence>
+                                <xs:attribute name="unit" type="xs:string" use="required" fixed="s"/>
+                                <xs:attribute name="enabled" type="xs:boolean" use="required"/>
+                                <xs:attribute name="note" type="xs:string"/>
+                            </xs:complexType>
+                        </xs:element>
+                        <xs:element name="last" type="xs:string"/>
+                    </xs:sequence>
+                </xs:complexType>
+            </xs:element>
+        </xs:schema>"#;
+        let schema = Schema::parse(xsd).unwrap();
+        let xml = "<r><single/><time>1</time><last/><extra/><extra/></r>";
+        let form = build_form(xml, Some(&schema)).unwrap();
+        let lists = &form.root.lists;
+        let names: Vec<&str> = lists.iter().map(|l| l.name.as_str()).collect();
+        assert_eq!(names, ["time", "window", "extra"], "not single or last");
+
+        let time = &lists[0];
+        assert_eq!((time.count, time.min, time.max), (1, 1, None));
+        assert_eq!((time.after, &time.new_item), (Some(1), &None));
+        assert_eq!(time.why_not_add(), None);
+        assert_eq!(time.why_not_remove().as_deref(), Some("The schema needs at least 1 <time> element"));
+
+        // An empty list goes after the elements the schema puts before it
+        let window = &lists[1];
+        assert_eq!((window.count, window.min, window.max), (0, 0, Some(3)));
+        assert_eq!(window.after, Some(1));
+        let new = window.new_item.as_ref().expect("an empty list has a new item");
+        assert_eq!(new.follows, ["single", "time"]);
+        let text = |name: &str, value: &str| NewElement {
+            name: name.into(),
+            attributes: Vec::new(),
+            content: NewContent::Text(value.into()),
+        };
+        assert_eq!(
+            new.element,
+            NewElement {
+                name: "window".into(),
+                attributes: vec![("unit".into(), "s".into()), ("enabled".into(), "false".into())],
+                content: NewContent::Elements(vec![
+                    text("start", "1.0"),
+                    text("pair", "0 0"),
+                    text("label", ""),
+                    text("fixed", "yes"),
+                    NewElement {
+                        name: "empty".into(),
+                        attributes: Vec::new(),
+                        content: NewContent::Elements(Vec::new()),
+                    },
+                ]),
+            }
+        );
+
+        // One the schema doesn't declare
+        let extra = &lists[2];
+        assert_eq!((extra.count, extra.min, extra.max, extra.after), (2, 0, None, Some(4)));
+        assert_eq!(build_form(xml, None).unwrap().root.lists, std::slice::from_ref(extra));
+
+        let full = "<r><single/><time>1</time><time>2</time><window/><window/><window/><last/></r>";
+        let form = build_form(full, Some(&schema)).unwrap();
+        let [time, window] = &form.root.lists[..] else {
+            panic!("two lists");
+        };
+        assert_eq!(time.why_not_remove(), None);
+        assert_eq!(window.why_not_add().as_deref(), Some("The schema allows at most 3 <window> elements"));
+
+        // A list the schema requires that's missing is added in the form
+        let form = build_form("<r><single/><last/></r>", Some(&schema)).unwrap();
+        assert!(form.root.notes.contains(&Note::error("Missing <time>, which the schema requires")));
+        let time = &form.root.lists[0];
+        assert_eq!(time.after, Some(0));
+        assert_eq!(time.new_item.as_ref().unwrap().element, text("time", "0.0"));
     }
 
     #[test]

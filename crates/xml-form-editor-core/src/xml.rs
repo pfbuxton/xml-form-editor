@@ -66,10 +66,7 @@ impl Path {
 
     pub fn child(&self, name: &str, index: usize) -> Path {
         let mut steps = self.0.clone();
-        steps.push(Step {
-            name: name.to_string(),
-            index,
-        });
+        steps.push(Step { name: name.to_string(), index });
         Path(steps)
     }
 
@@ -89,9 +86,7 @@ impl Path {
             return None;
         }
         rest.iter().try_fold(root, |node, step| {
-            node.children()
-                .filter(|c| c.is_element() && c.tag_name().name() == step.name)
-                .nth(step.index)
+            node.children().filter(|c| c.is_element() && c.tag_name().name() == step.name).nth(step.index)
         })
     }
 }
@@ -117,24 +112,16 @@ pub fn schema_location(xml: &str) -> Result<Option<String>, XmlError> {
 
 pub(crate) fn schema_location_of(doc: &Document) -> Option<String> {
     let root = doc.root_element();
-    if let Some(location) = root
-        .attribute((XSI_NS, "noNamespaceSchemaLocation"))
-        .map(str::trim)
+    if let Some(location) = root.attribute((XSI_NS, "noNamespaceSchemaLocation")).map(str::trim)
         && !location.is_empty()
     {
         return Some(location.to_string());
     }
     // Pairs of namespace and location: prefer the pair for the root element's namespace
-    let words: Vec<&str> = root
-        .attribute((XSI_NS, "schemaLocation"))?
-        .split_whitespace()
-        .collect();
+    let words: Vec<&str> = root.attribute((XSI_NS, "schemaLocation"))?.split_whitespace().collect();
     let namespace = root.tag_name().namespace();
     let (pairs, _) = words.as_chunks::<2>();
-    let [_, location] = pairs
-        .iter()
-        .find(|[pair_namespace, _]| Some(*pair_namespace) == namespace)
-        .or(pairs.first())?;
+    let [_, location] = pairs.iter().find(|[pair_namespace, _]| Some(*pair_namespace) == namespace).or(pairs.first())?;
     Some(location.to_string())
 }
 
@@ -265,10 +252,7 @@ pub(crate) fn is_xsi_nil(src: &str, node: Node, attribute: &RawAttribute) -> boo
 }
 
 pub(crate) fn is_nil(node: Node) -> bool {
-    matches!(
-        node.attribute((XSI_NS, "nil")).map(str::trim),
-        Some("true" | "1")
-    )
+    matches!(node.attribute((XSI_NS, "nil")).map(str::trim), Some("true" | "1"))
 }
 
 #[cfg(test)]
@@ -280,11 +264,7 @@ mod tests {
         let src = r#"<a x="1" y = 'two' >text</a>"#;
         let tag = scan_start_tag(src, 0).unwrap();
         assert_eq!(&src[tag.name.clone()], "a");
-        let names: Vec<&str> = tag
-            .attributes
-            .iter()
-            .map(|a| &src[a.name.clone()])
-            .collect();
+        let names: Vec<&str> = tag.attributes.iter().map(|a| &src[a.name.clone()]).collect();
         assert_eq!(names, ["x", "y"]);
         assert_eq!(&src[tag.attributes[1].value.clone()], "two");
         assert_eq!(&src[tag.tail..tag.end], " >");

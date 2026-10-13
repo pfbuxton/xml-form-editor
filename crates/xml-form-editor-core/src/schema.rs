@@ -17,7 +17,7 @@ use crate::xml::{local_name, parse};
 const XS_NS: &str = "http://www.w3.org/2001/XMLSchema";
 
 /// Deep enough for any real schema, while stopping circular type references.
-const MAX_DEPTH: usize = 40;
+pub(crate) const MAX_DEPTH: usize = 40;
 
 /// Why a schema couldn't be read.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -142,10 +142,7 @@ pub(crate) struct ChildDecl<'a> {
 }
 
 /// What an element may contain.
-#[allow(
-    clippy::large_enum_variant,
-    reason = "built once per element and used at once"
-)]
+#[allow(clippy::large_enum_variant, reason = "built once per element and used at once")]
 pub(crate) enum ElementContent<'a> {
     /// A value of a simple type
     Text(SimpleInfo),
@@ -161,13 +158,10 @@ pub(crate) enum ElementContent<'a> {
 
 impl Schema {
     pub fn parse(xsd: &str) -> Result<Schema, SchemaError> {
-        let doc = parse(xsd)
-            .map_err(|e| SchemaError(format!("The schema is not well-formed XML: {e}")))?;
+        let doc = parse(xsd).map_err(|e| SchemaError(format!("The schema is not well-formed XML: {e}")))?;
         let root = doc.root_element();
         if !is_xs(root, "schema") {
-            return Err(SchemaError(
-                "The schema's root element is not xs:schema".into(),
-            ));
+            return Err(SchemaError("The schema's root element is not xs:schema".into()));
         }
         let mut schema = Schema::default();
         for child in xs_children(root) {
@@ -178,31 +172,22 @@ impl Schema {
                 }
                 "simpleType" => {
                     if let Some(name) = child.attribute("name") {
-                        schema
-                            .simple_types
-                            .insert(name.to_string(), simple_type(child));
+                        schema.simple_types.insert(name.to_string(), simple_type(child));
                     }
                 }
                 "complexType" => {
                     if let Some(name) = child.attribute("name") {
-                        schema
-                            .complex_types
-                            .insert(name.to_string(), complex_type(child));
+                        schema.complex_types.insert(name.to_string(), complex_type(child));
                     }
                 }
                 "group" => {
-                    if let (Some(name), Some(model)) = (
-                        child.attribute("name"),
-                        xs_children(child).find_map(particle),
-                    ) {
+                    if let (Some(name), Some(model)) = (child.attribute("name"), xs_children(child).find_map(particle)) {
                         schema.groups.insert(name.to_string(), model);
                     }
                 }
                 "attributeGroup" => {
                     if let Some(name) = child.attribute("name") {
-                        schema
-                            .attribute_groups
-                            .insert(name.to_string(), attribute_items(child));
+                        schema.attribute_groups.insert(name.to_string(), attribute_items(child));
                     }
                 }
                 "attribute" => {
@@ -210,12 +195,10 @@ impl Schema {
                     schema.attributes.insert(decl.name.clone(), decl);
                 }
                 kind @ ("include" | "import" | "redefine" | "override") => {
-                    let location = child
-                        .attribute("schemaLocation")
-                        .unwrap_or("another schema");
-                    schema.warnings.push(format!(
-                        "xs:{kind} is not supported, so definitions from {location} are missing"
-                    ));
+                    let location = child.attribute("schemaLocation").unwrap_or("another schema");
+                    schema
+                        .warnings
+                        .push(format!("xs:{kind} is not supported, so definitions from {location} are missing"));
                 }
                 _ => {}
             }
@@ -246,9 +229,7 @@ impl Schema {
         }
         match ty {
             TypeRef::Any => ElementContent::Untyped,
-            TypeRef::Named(name) if !self.simple_types.contains_key(name) => {
-                ElementContent::Untyped
-            }
+            TypeRef::Named(name) if !self.simple_types.contains_key(name) => ElementContent::Untyped,
             _ => ElementContent::Text(self.simple_info(ty)),
         }
     }
@@ -295,24 +276,11 @@ impl Schema {
 
     /// Lists the elements a content model allows, with how often each may occur: the product of
     /// the occurrences of the particles around it, and 0 at least when it's one of a choice.
-    fn flatten<'a>(
-        &'a self,
-        particle: &'a Particle,
-        min: u32,
-        max: Option<u32>,
-        out: &mut Vec<ChildDecl<'a>>,
-        open: &mut bool,
-        depth: usize,
-    ) {
+    fn flatten<'a>(&'a self, particle: &'a Particle, min: u32, max: Option<u32>, out: &mut Vec<ChildDecl<'a>>, open: &mut bool, depth: usize) {
         if depth > MAX_DEPTH {
             return;
         }
-        let scale = |o: &Occurs| {
-            (
-                min.saturating_mul(o.min),
-                max.zip(o.max).map(|(a, b)| a.saturating_mul(b)),
-            )
-        };
+        let scale = |o: &Occurs| (min.saturating_mul(o.min), max.zip(o.max).map(|(a, b)| a.saturating_mul(b)));
         match particle {
             Particle::Element(decl, occurs) => push_child(out, decl, scale(occurs)),
             Particle::ElementRef(name, occurs) => {
@@ -352,19 +320,12 @@ impl Schema {
         out
     }
 
-    fn collect_attributes<'a>(
-        &'a self,
-        ct: &'a ComplexTypeDef,
-        out: &mut Vec<(&'a AttributeDecl, bool)>,
-        depth: usize,
-    ) {
+    fn collect_attributes<'a>(&'a self, ct: &'a ComplexTypeDef, out: &mut Vec<(&'a AttributeDecl, bool)>, depth: usize) {
         if depth > MAX_DEPTH {
             return;
         }
         let base = match &ct.content {
-            Content::Extension { base, .. } | Content::Simple(TypeRef::Named(base)) => {
-                self.complex_types.get(base)
-            }
+            Content::Extension { base, .. } | Content::Simple(TypeRef::Named(base)) => self.complex_types.get(base),
             _ => None,
         };
         if let Some(base) = base {
@@ -373,12 +334,7 @@ impl Schema {
         self.collect_attribute_items(&ct.attributes, out, depth);
     }
 
-    fn collect_attribute_items<'a>(
-        &'a self,
-        items: &'a [AttributeItem],
-        out: &mut Vec<(&'a AttributeDecl, bool)>,
-        depth: usize,
-    ) {
+    fn collect_attribute_items<'a>(&'a self, items: &'a [AttributeItem], out: &mut Vec<(&'a AttributeDecl, bool)>, depth: usize) {
         for item in items {
             match item {
                 AttributeItem::Decl(decl) => out.push((decl, decl.required)),
@@ -388,11 +344,7 @@ impl Schema {
                     }
                 }
                 AttributeItem::Group(name) => {
-                    if let Some(group) = self
-                        .attribute_groups
-                        .get(name)
-                        .filter(|_| depth < MAX_DEPTH)
-                    {
+                    if let Some(group) = self.attribute_groups.get(name).filter(|_| depth < MAX_DEPTH) {
                         self.collect_attribute_items(group, out, depth + 1);
                     }
                 }
@@ -416,13 +368,11 @@ impl Schema {
         match ty {
             TypeRef::Builtin(builtin) => SimpleInfo::builtin(*builtin),
             TypeRef::Simple(def) => self.simple_type_info(def, depth),
-            TypeRef::Named(name) => {
-                match (self.simple_types.get(name), self.complex_types.get(name)) {
-                    (Some(def), _) => self.simple_type_info(def, depth),
-                    (None, Some(ct)) => simple_content(ct),
-                    (None, None) => SimpleInfo::default(),
-                }
-            }
+            TypeRef::Named(name) => match (self.simple_types.get(name), self.complex_types.get(name)) {
+                (Some(def), _) => self.simple_type_info(def, depth),
+                (None, Some(ct)) => simple_content(ct),
+                (None, None) => SimpleInfo::default(),
+            },
             TypeRef::Complex(ct) => simple_content(ct),
             TypeRef::Any => SimpleInfo::default(),
         }
@@ -436,12 +386,7 @@ impl Schema {
                 info
             }
             Variety::List { item } => SimpleInfo::list(self.simple_info_at(item, depth + 1)),
-            Variety::Union { members } => SimpleInfo::union(
-                members
-                    .iter()
-                    .map(|m| self.simple_info_at(m, depth + 1))
-                    .collect(),
-            ),
+            Variety::Union { members } => SimpleInfo::union(members.iter().map(|m| self.simple_info_at(m, depth + 1)).collect()),
         };
         info.name = def.name.clone();
         if def.doc.is_some() {
@@ -451,11 +396,7 @@ impl Schema {
     }
 }
 
-fn push_child<'a>(
-    out: &mut Vec<ChildDecl<'a>>,
-    decl: &'a ElementDecl,
-    (min, max): (u32, Option<u32>),
-) {
+fn push_child<'a>(out: &mut Vec<ChildDecl<'a>>, decl: &'a ElementDecl, (min, max): (u32, Option<u32>)) {
     // The same name in two branches of a choice: the first declaration wins
     if !out.iter().any(|c| c.decl.name == decl.name) {
         out.push(ChildDecl { decl, min, max });
@@ -463,14 +404,11 @@ fn push_child<'a>(
 }
 
 fn is_xs(node: Node, name: &str) -> bool {
-    node.is_element()
-        && node.tag_name().namespace() == Some(XS_NS)
-        && node.tag_name().name() == name
+    node.is_element() && node.tag_name().namespace() == Some(XS_NS) && node.tag_name().name() == name
 }
 
 fn xs_children<'a, 'input>(node: Node<'a, 'input>) -> impl Iterator<Item = Node<'a, 'input>> {
-    node.children()
-        .filter(|c| c.is_element() && c.tag_name().namespace() == Some(XS_NS))
+    node.children().filter(|c| c.is_element() && c.tag_name().namespace() == Some(XS_NS))
 }
 
 fn xs_child<'a, 'input>(node: Node<'a, 'input>, name: &str) -> Option<Node<'a, 'input>> {
@@ -482,17 +420,8 @@ fn xs_child<'a, 'input>(node: Node<'a, 'input>, name: &str) -> Option<Node<'a, '
 fn documentation(node: Node) -> Option<String> {
     let paragraphs: Vec<String> = xs_children(node)
         .filter(|c| c.tag_name().name() == "annotation")
-        .flat_map(|annotation| {
-            xs_children(annotation).filter(|c| c.tag_name().name() == "documentation")
-        })
-        .map(|doc| {
-            tidy(
-                &doc.descendants()
-                    .filter(|n| n.is_text())
-                    .filter_map(|n| n.text())
-                    .collect::<String>(),
-            )
-        })
+        .flat_map(|annotation| xs_children(annotation).filter(|c| c.tag_name().name() == "documentation"))
+        .map(|doc| tidy(&doc.descendants().filter(|n| n.is_text()).filter_map(|n| n.text()).collect::<String>()))
         .filter(|text| !text.is_empty())
         .collect();
     (!paragraphs.is_empty()).then(|| paragraphs.join("\n\n"))
@@ -504,18 +433,8 @@ fn units(node: Node) -> Option<String> {
     xs_children(node)
         .filter(|c| c.tag_name().name() == "annotation")
         .flat_map(|annotation| xs_children(annotation).filter(|c| c.tag_name().name() == "appinfo"))
-        .flat_map(|appinfo| {
-            appinfo
-                .children()
-                .filter(|c| c.is_element() && c.tag_name().name() == "units")
-        })
-        .find_map(|units| {
-            units
-                .text()
-                .map(str::trim)
-                .filter(|text| !text.is_empty())
-                .map(str::to_string)
-        })
+        .flat_map(|appinfo| appinfo.children().filter(|c| c.is_element() && c.tag_name().name() == "units"))
+        .find_map(|units| units.text().map(str::trim).filter(|text| !text.is_empty()).map(str::to_string))
 }
 
 fn tidy(text: &str) -> String {
@@ -544,8 +463,7 @@ fn type_ref(node: Node, qname: &str) -> TypeRef {
         None => (None, qname.trim()),
     };
     let namespace = node.lookup_namespace_uri(prefix);
-    let builtin =
-        namespace == Some(XS_NS) || (namespace.is_none() && matches!(prefix, Some("xs" | "xsd")));
+    let builtin = namespace == Some(XS_NS) || (namespace.is_none() && matches!(prefix, Some("xs" | "xsd")));
     if !builtin {
         return TypeRef::Named(local.to_string());
     }
@@ -573,10 +491,7 @@ fn declared_type(node: Node) -> TypeRef {
 fn inner_type(node: Node, attribute: &str) -> TypeRef {
     match node.attribute(attribute) {
         Some(name) => type_ref(node, name),
-        None => xs_child(node, "simpleType")
-            .map_or(TypeRef::Builtin(Builtin::AnySimpleType), |s| {
-                TypeRef::Simple(Box::new(simple_type(s)))
-            }),
+        None => xs_child(node, "simpleType").map_or(TypeRef::Builtin(Builtin::AnySimpleType), |s| TypeRef::Simple(Box::new(simple_type(s)))),
     }
 }
 
@@ -584,10 +499,7 @@ fn element_decl(node: Node) -> ElementDecl {
     ElementDecl {
         name: node.attribute("name").unwrap_or_default().to_string(),
         ty: declared_type(node),
-        nillable: matches!(
-            node.attribute("nillable").map(str::trim),
-            Some("true" | "1")
-        ),
+        nillable: matches!(node.attribute("nillable").map(str::trim), Some("true" | "1")),
         fixed: node.attribute("fixed").map(str::to_string),
         doc: documentation(node),
         units: units(node),
@@ -595,10 +507,7 @@ fn element_decl(node: Node) -> ElementDecl {
 }
 
 fn occurs(node: Node) -> Occurs {
-    let min = node
-        .attribute("minOccurs")
-        .and_then(|v| v.trim().parse().ok())
-        .unwrap_or(1);
+    let min = node.attribute("minOccurs").and_then(|v| v.trim().parse().ok()).unwrap_or(1);
     let max = match node.attribute("maxOccurs").map(str::trim) {
         Some("unbounded") => None,
         Some(v) => Some(v.parse().unwrap_or(1)),
@@ -614,9 +523,7 @@ fn particle(node: Node) -> Option<Particle> {
             Some(name) => Particle::ElementRef(local_name(name).to_string(), occurs),
             None => Particle::Element(element_decl(node), occurs),
         },
-        "sequence" | "all" => {
-            Particle::Sequence(xs_children(node).filter_map(particle).collect(), occurs)
-        }
+        "sequence" | "all" => Particle::Sequence(xs_children(node).filter_map(particle).collect(), occurs),
         "choice" => Particle::Choice(xs_children(node).filter_map(particle).collect(), occurs),
         "group" => Particle::GroupRef(local_name(node.attribute("ref")?).to_string(), occurs),
         "any" => Particle::Any,
@@ -637,12 +544,7 @@ fn simple_type(node: Node) -> SimpleTypeDef {
     } else if let Some(union) = xs_child(node, "union") {
         let mut members: Vec<TypeRef> = union
             .attribute("memberTypes")
-            .map(|names| {
-                names
-                    .split_whitespace()
-                    .map(|name| type_ref(union, name))
-                    .collect()
-            })
+            .map(|names| names.split_whitespace().map(|name| type_ref(union, name)).collect())
             .unwrap_or_default();
         members.extend(
             xs_children(union)
@@ -709,20 +611,15 @@ fn complex_type(node: Node) -> ComplexTypeDef {
                 };
                 let base = inner_type(derivation, "base");
                 let restricted = facets(derivation);
-                content = Content::Simple(
-                    if derivation.tag_name().name() == "restriction" && !restricted.is_empty() {
-                        TypeRef::Simple(Box::new(SimpleTypeDef {
-                            name: None,
-                            doc: None,
-                            variety: Variety::Restriction {
-                                base,
-                                facets: restricted,
-                            },
-                        }))
-                    } else {
-                        base
-                    },
-                );
+                content = Content::Simple(if derivation.tag_name().name() == "restriction" && !restricted.is_empty() {
+                    TypeRef::Simple(Box::new(SimpleTypeDef {
+                        name: None,
+                        doc: None,
+                        variety: Variety::Restriction { base, facets: restricted },
+                    }))
+                } else {
+                    base
+                });
                 attributes.extend(attribute_items(derivation));
             }
             "complexContent" => {
@@ -730,9 +627,7 @@ fn complex_type(node: Node) -> ComplexTypeDef {
                     continue;
                 };
                 let extra = xs_children(derivation).find_map(particle);
-                let base = derivation
-                    .attribute("base")
-                    .map(|name| type_ref(derivation, name));
+                let base = derivation.attribute("base").map(|name| type_ref(derivation, name));
                 content = match (derivation.tag_name().name(), base) {
                     ("extension", Some(TypeRef::Named(base))) => Content::Extension { base, extra },
                     // A restriction restates the whole content model
@@ -765,9 +660,7 @@ fn attribute_item(node: Node) -> Option<AttributeItem> {
             Some(name) => AttributeItem::Ref(local_name(name).to_string(), required),
             None => AttributeItem::Decl(attribute_decl(node)),
         }),
-        "attributeGroup" => node
-            .attribute("ref")
-            .map(|name| AttributeItem::Group(local_name(name).to_string())),
+        "attributeGroup" => node.attribute("ref").map(|name| AttributeItem::Group(local_name(name).to_string())),
         _ => None,
     }
 }
@@ -777,10 +670,7 @@ fn attribute_decl(node: Node) -> AttributeDecl {
         name: node.attribute("name").unwrap_or_default().to_string(),
         ty: match node.attribute("type") {
             Some(name) => type_ref(node, name),
-            None => xs_child(node, "simpleType")
-                .map_or(TypeRef::Builtin(Builtin::AnySimpleType), |s| {
-                    TypeRef::Simple(Box::new(simple_type(s)))
-                }),
+            None => xs_child(node, "simpleType").map_or(TypeRef::Builtin(Builtin::AnySimpleType), |s| TypeRef::Simple(Box::new(simple_type(s)))),
         },
         required: node.attribute("use") == Some("required"),
         fixed: node.attribute("fixed").map(str::to_string),

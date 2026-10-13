@@ -6,7 +6,6 @@
 //! move between the cells as in a spreadsheet, and Tab moves along the row.
 
 use std::hash::{DefaultHasher, Hash, Hasher};
-use std::time::Duration;
 
 use leptos::html;
 use leptos::prelude::*;
@@ -14,17 +13,14 @@ use wasm_bindgen::JsCast;
 use web_sys::HtmlInputElement;
 use xml_form_editor_core::{EditOp, Matrix, Severity};
 
-use crate::Ctx;
-use crate::fields::{Mark, copy_button, label, notes_view, row_class, units_label, variant_badge};
+use crate::fields::{Mark, copy_button, label, notes_view, remove_button, row_class, units_label, variant_badge};
 use crate::rows::{Change, MatrixRow, Row};
+use crate::{Ctx, FOCUS_WAIT};
 
 /// The narrowest and widest a column is, in characters: as wide as its widest value, within these.
 /// The narrowest leaves room in a column's number for the button that removes it.
 const MIN_WIDTH: usize = 4;
 const MAX_WIDTH: usize = 24;
-
-/// How long a cell that an edit makes, such as the first of a new row, waits to be focused.
-const FOCUS_WAIT: Duration = Duration::from_secs(3);
 
 /// What the parts of a grid share.
 #[derive(Clone, Copy)]
@@ -54,12 +50,10 @@ impl Grid {
     /// Focuses a cell and selects its value, as moving to a cell of a spreadsheet does, so that
     /// typing replaces it. Whether there is such a cell.
     fn focus(&self, row: usize, column: usize) -> bool {
-        let cell = self.table.get_untracked().and_then(|table| {
-            table
-                .query_selector(&format!("input[data-cell=\"{row}:{column}\"]"))
-                .ok()
-                .flatten()
-        });
+        let cell = self
+            .table
+            .get_untracked()
+            .and_then(|table| table.query_selector(&format!("input[data-cell=\"{row}:{column}\"]")).ok().flatten());
         match cell.and_then(|cell| cell.dyn_into::<HtmlInputElement>().ok()) {
             Some(input) => {
                 let _ = input.focus();
@@ -106,14 +100,10 @@ impl Grid {
                     index: columns,
                     value: m.matrix.fill()?,
                 },
-                Resize::RemoveRow(row) => EditOp::RemoveRow {
+                Resize::RemoveRow(row) => EditOp::RemoveElement {
                     path: m.lines.get(row)?.path.clone(),
                 },
-                Resize::RemoveColumn(column) => EditOp::RemoveColumn {
-                    path,
-                    name,
-                    index: column,
-                },
+                Resize::RemoveColumn(column) => EditOp::RemoveColumn { path, name, index: column },
             })
         });
         let Some(op) = op else {
@@ -132,48 +122,31 @@ impl Grid {
         let why = |m: &MatrixRow| {
             let (rows, columns) = (m.lines.len(), m.columns());
             match resize {
-                Resize::AddRow if !m.matrix.allows_rows(rows + 1) => {
-                    Some(format!("The schema allows at most {}", count(rows, "row")))
-                }
+                Resize::AddRow if !m.matrix.allows_rows(rows + 1) => Some(format!("The schema allows at most {}", count(rows, "row"))),
                 Resize::AddRow => m
                     .matrix
                     .new_row(new_row_width(m, columns))
                     .is_none()
                     .then(|| "The schema allows no row of values to start it with".to_string()),
                 Resize::AddColumn if rows == 0 => Some("Add a row first".to_string()),
-                Resize::AddColumn => m.matrix.new_row(columns + 1).is_none().then(|| {
-                    format!(
-                        "The schema allows at most {} in a row",
-                        count(columns, "value")
-                    )
-                }),
-                Resize::RemoveRow(_) if rows == 0 || !m.matrix.allows_rows(rows - 1) => {
-                    Some(format!("The schema needs at least {}", count(rows, "row")))
-                }
-                Resize::RemoveColumn(_)
-                    if columns == 0 || m.matrix.new_row(columns - 1).is_none() =>
-                {
-                    Some(format!(
-                        "The schema needs at least {} in a row",
-                        count(columns, "value")
-                    ))
+                Resize::AddColumn => m
+                    .matrix
+                    .new_row(columns + 1)
+                    .is_none()
+                    .then(|| format!("The schema allows at most {} in a row", count(columns, "value"))),
+                Resize::RemoveRow(_) if rows == 0 || !m.matrix.allows_rows(rows - 1) => Some(format!("The schema needs at least {}", count(rows, "row"))),
+                Resize::RemoveColumn(_) if columns == 0 || m.matrix.new_row(columns - 1).is_none() => {
+                    Some(format!("The schema needs at least {} in a row", count(columns, "value")))
                 }
                 Resize::RemoveRow(_) | Resize::RemoveColumn(_) => None,
             }
         };
-        if track {
-            self.matrix.with(why)
-        } else {
-            self.matrix.with_untracked(why)
-        }
+        if track { self.matrix.with(why) } else { self.matrix.with_untracked(why) }
     }
 
     /// Forgets a value typed in a cell that wasn't written.
     fn clear_rejected(&self, row: usize, column: usize) {
-        if self
-            .rejected
-            .with_untracked(|r| r.as_ref().is_some_and(|r| (r.0, r.1) == (row, column)))
-        {
+        if self.rejected.with_untracked(|r| r.as_ref().is_some_and(|r| (r.0, r.1) == (row, column))) {
             self.rejected.set(None);
         }
     }
@@ -186,18 +159,12 @@ fn new_row_width(m: &MatrixRow, columns: usize) -> usize {
         return columns;
     }
     let ty = &m.matrix.row_type;
-    ty.length
-        .or(ty.min_length)
-        .map_or(1, |n| (n as usize).max(1))
+    ty.length.or(ty.min_length).map_or(1, |n| (n as usize).max(1))
 }
 
 pub(crate) fn matrix_view(row: MatrixRow, ctx: Ctx) -> impl IntoView {
     let MatrixRow {
-        place,
-        name,
-        index,
-        copy_path,
-        ..
+        place, name, index, copy_path, ..
     } = row.clone();
     let key = place.key.clone();
     let matrix = Memo::new(move |previous: Option<&MatrixRow>| {
@@ -224,20 +191,23 @@ pub(crate) fn matrix_view(row: MatrixRow, ctx: Ctx) -> impl IntoView {
     };
     let empty = Memo::new(move |_| grid.shape.with(|(rows, _)| *rows == 0));
     let problems = Memo::new(move |_| matrix.with(value_problems));
-    let problem = move || {
-        !problems.with(Vec::is_empty)
-            || matrix.with(|m| m.notes.iter().any(|n| n.severity == Severity::Error))
-    };
+    let problem = move || !problems.with(Vec::is_empty) || matrix.with(|m| m.notes.iter().any(|n| n.severity == Severity::Error));
     let reveal = move |_| matrix.with_untracked(|m| ctx.reveal(&m.place.document, m.offset));
+    let label = label(name, index);
+    // When the matrix is an item of a list
+    let remove = {
+        let (document, label) = (place.document.clone(), label.clone());
+        move || {
+            matrix
+                .with(|m| m.remove.clone())
+                .map(|remove| remove_button(ctx, document.clone(), &label, remove).into_any())
+        }
+    };
     let shape = move || match grid.shape.get() {
         (0, _) => ("no rows".to_string(), None),
         (rows, columns) => (
             format!("{rows} × {columns}"),
-            Some(format!(
-                "{}, {}",
-                count(rows, "row"),
-                count(columns, "column")
-            )),
+            Some(format!("{}, {}", count(rows, "row"), count(columns, "column"))),
         ),
     };
     // Focus leaving the grid for somewhere else clears the highlighted row and column; focus lost
@@ -246,10 +216,10 @@ pub(crate) fn matrix_view(row: MatrixRow, ctx: Ctx) -> impl IntoView {
         let Some(to) = ev.related_target() else {
             return;
         };
-        let inside = grid.table.get_untracked().is_some_and(|table| {
-            to.dyn_ref::<web_sys::Node>()
-                .is_some_and(|to| table.contains(Some(to)))
-        });
+        let inside = grid
+            .table
+            .get_untracked()
+            .is_some_and(|table| to.dyn_ref::<web_sys::Node>().is_some_and(|to| table.contains(Some(to))));
         if !inside {
             grid.active.set(None);
         }
@@ -264,7 +234,7 @@ pub(crate) fn matrix_view(row: MatrixRow, ctx: Ctx) -> impl IntoView {
             data-path=place.key.clone()
         >
             <div class="title">
-                <span class="name" title="Show in the XML" on:click=reveal>{label(name, index)}</span>
+                <span class="name" title="Show in the XML" on:click=reveal>{label}</span>
                 <span class="type" title=move || matrix.with(type_title)>{move || matrix.with(type_summary)}</span>
                 {move || {
                     let (text, title) = shape();
@@ -273,6 +243,7 @@ pub(crate) fn matrix_view(row: MatrixRow, ctx: Ctx) -> impl IntoView {
                 {move || matrix.with(|m| m.units.clone()).map(|units| view! { <span class="units" title="Units">{units_label(units)}</span> }.into_any())}
                 {move || matrix.with(|m| variant_badge(&m.variant).map(IntoAny::into_any))}
                 {copy_path.map(|path| copy_button(ctx, path))}
+                {remove}
             </div>
             {move || matrix.with(|m| m.doc.clone()).map(|doc| view! { <div class="doc">{doc}</div> }.into_any())}
             // Hidden while there are no rows, rather than rebuilt when the first comes
@@ -366,11 +337,7 @@ fn column_header(grid: Grid, column: usize) -> AnyView {
 
 fn grid_row(grid: Grid, row: usize) -> AnyView {
     let active = move || grid.active.with(|a| a.is_some_and(|(r, _)| r == row));
-    let title = move || {
-        grid.matrix
-            .with(|m| m.matrix.row_doc.clone())
-            .map(|doc| format!("Row {}: {doc}", row + 1))
-    };
+    let title = move || grid.matrix.with(|m| m.matrix.row_doc.clone()).map(|doc| format!("Row {}: {doc}", row + 1));
     view! {
         <tr>
             <th scope="row" class="index" class:active=active title=title>
@@ -416,10 +383,7 @@ fn cells(grid: Grid, row: usize) -> Vec<Cell> {
                 Cell {
                     row,
                     column,
-                    error: value
-                        .as_deref()
-                        .zip(ty)
-                        .and_then(|(value, ty)| ty.validate(value).err()),
+                    error: value.as_deref().zip(ty).and_then(|(value, ty)| ty.validate(value).err()),
                     change: line.changes.get(column).copied().unwrap_or(Change::None),
                     value,
                 }
@@ -430,9 +394,7 @@ fn cells(grid: Grid, row: usize) -> Vec<Cell> {
 
 /// Whether the page's focus is lost, as when the element holding it goes.
 fn focus_lost() -> bool {
-    document()
-        .active_element()
-        .is_none_or(|element| element.tag_name() == "BODY")
+    document().active_element().is_none_or(|element| element.tag_name() == "BODY")
 }
 
 /// A cell: an input for its value. Only valid values are written; one that isn't stays in the cell,
@@ -456,10 +418,7 @@ fn cell_view(grid: Grid, cell: Cell) -> AnyView {
     let wanted = grid.wanted.with_value(|w| *w == Some((row, column)));
     if wanted || grid.active.get_untracked() == Some((row, column)) {
         request_animation_frame(move || {
-            let wanted = grid
-                .wanted
-                .try_update_value(|w| w.take_if(|w| *w == (row, column)).is_some())
-                .unwrap_or(false);
+            let wanted = grid.wanted.try_update_value(|w| w.take_if(|w| *w == (row, column)).is_some()).unwrap_or(false);
             if wanted || (grid.active.get_untracked() == Some((row, column)) && focus_lost()) {
                 grid.focus(row, column);
             }
@@ -476,11 +435,7 @@ fn cell_view(grid: Grid, cell: Cell) -> AnyView {
         if value.split_whitespace().nth(1).is_some() {
             return Err("A cell holds one value, with no spaces".to_string());
         }
-        grid.matrix.with_untracked(|m| {
-            m.matrix
-                .value_type()
-                .map_or(Ok(()), |ty| ty.validate(value))
-        })?;
+        grid.matrix.with_untracked(|m| m.matrix.value_type().map_or(Ok(()), |ty| ty.validate(value)))?;
         Ok(value.to_string())
     };
     let commit = move |raw: String| {
@@ -518,22 +473,15 @@ fn cell_view(grid: Grid, cell: Cell) -> AnyView {
         };
         let raw = element.value();
         let length = raw.encode_utf16().count() as u32;
-        let (start, end) = (
-            element.selection_start().ok().flatten(),
-            element.selection_end().ok().flatten(),
-        );
+        let (start, end) = (element.selection_start().ok().flatten(), element.selection_end().ok().flatten());
         let all = start == Some(0) && end == Some(length);
         let to = match ev.key().as_str() {
             "Enter" if ev.shift_key() => row.checked_sub(1).map(|r| (r, column)),
             "Enter" | "ArrowDown" => Some((row + 1, column)),
             "ArrowUp" => row.checked_sub(1).map(|r| (r, column)),
             // Along the row from the ends of the value, or when it's all selected
-            "ArrowLeft" if all || (start == Some(0) && end == Some(0)) => {
-                column.checked_sub(1).map(|c| (row, c))
-            }
-            "ArrowRight" if all || (start == Some(length) && end == Some(length)) => {
-                Some((row, column + 1))
-            }
+            "ArrowLeft" if all || (start == Some(0) && end == Some(0)) => column.checked_sub(1).map(|c| (row, c)),
+            "ArrowRight" if all || (start == Some(length) && end == Some(length)) => Some((row, column + 1)),
             "Escape" => {
                 element.set_value(&current.get_value());
                 element.select();
@@ -560,9 +508,7 @@ fn cell_view(grid: Grid, cell: Cell) -> AnyView {
 
     let mark = Mark::from(change);
     let width = move || {
-        let chars = grid
-            .widths
-            .with(|w| w.get(column).copied().unwrap_or(MIN_WIDTH));
+        let chars = grid.widths.with(|w| w.get(column).copied().unwrap_or(MIN_WIDTH));
         format!("width: calc({chars}ch + 14px)")
     };
     view! {
@@ -644,11 +590,7 @@ fn type_summary(m: &MatrixRow) -> String {
 /// The type line's tooltip: what each row is.
 fn type_title(m: &MatrixRow) -> String {
     let row_type = &m.matrix.row_type;
-    let mut title = format!(
-        "Each row is a <{}> holding a {}",
-        m.matrix.row_name,
-        row_type.summary()
-    );
+    let mut title = format!("Each row is a <{}> holding a {}", m.matrix.row_name, row_type.summary());
     if let Some(doc) = &row_type.doc {
         title.push_str("\n\n");
         title.push_str(doc);
@@ -657,9 +599,5 @@ fn type_title(m: &MatrixRow) -> String {
 }
 
 fn count(n: usize, what: &str) -> String {
-    if n == 1 {
-        format!("1 {what}")
-    } else {
-        format!("{n} {what}s")
-    }
+    if n == 1 { format!("1 {what}") } else { format!("{n} {what}s") }
 }

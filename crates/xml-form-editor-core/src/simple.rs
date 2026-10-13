@@ -57,8 +57,9 @@ impl Builtin {
         Some(match name {
             "string" => Builtin::String,
             "normalizedString" => Builtin::NormalizedString,
-            "token" | "language" | "Name" | "NCName" | "ID" | "IDREF" | "IDREFS" | "ENTITY"
-            | "ENTITIES" | "NMTOKEN" | "NMTOKENS" | "NOTATION" => Builtin::Token,
+            "token" | "language" | "Name" | "NCName" | "ID" | "IDREF" | "IDREFS" | "ENTITY" | "ENTITIES" | "NMTOKEN" | "NMTOKENS" | "NOTATION" => {
+                Builtin::Token
+            }
             "anyURI" => Builtin::AnyUri,
             "QName" => Builtin::QName,
             "boolean" => Builtin::Boolean,
@@ -154,20 +155,14 @@ impl Builtin {
     }
 
     pub fn is_numeric(self) -> bool {
-        self.integer_range().is_some()
-            || matches!(self, Builtin::Decimal | Builtin::Float | Builtin::Double)
+        self.integer_range().is_some() || matches!(self, Builtin::Decimal | Builtin::Float | Builtin::Double)
     }
 
     /// Whether the length facets count this type's characters.
     fn is_textual(self) -> bool {
         matches!(
             self,
-            Builtin::String
-                | Builtin::NormalizedString
-                | Builtin::Token
-                | Builtin::AnyUri
-                | Builtin::QName
-                | Builtin::AnySimpleType
+            Builtin::String | Builtin::NormalizedString | Builtin::Token | Builtin::AnyUri | Builtin::QName | Builtin::AnySimpleType
         )
     }
 
@@ -183,14 +178,10 @@ impl Builtin {
     fn expectation(self) -> &'static str {
         match self {
             Builtin::Boolean => "true or false",
-            Builtin::Integer | Builtin::Long | Builtin::Int | Builtin::Short | Builtin::Byte => {
-                "a whole number"
+            Builtin::Integer | Builtin::Long | Builtin::Int | Builtin::Short | Builtin::Byte => "a whole number",
+            Builtin::NonNegativeInteger | Builtin::UnsignedLong | Builtin::UnsignedInt | Builtin::UnsignedShort | Builtin::UnsignedByte => {
+                "a whole number, 0 or more"
             }
-            Builtin::NonNegativeInteger
-            | Builtin::UnsignedLong
-            | Builtin::UnsignedInt
-            | Builtin::UnsignedShort
-            | Builtin::UnsignedByte => "a whole number, 0 or more",
             Builtin::PositiveInteger => "a whole number, 1 or more",
             Builtin::NonPositiveInteger => "a whole number, 0 or less",
             Builtin::NegativeInteger => "a whole number, -1 or less",
@@ -220,24 +211,12 @@ impl Builtin {
             Builtin::Boolean => matches!(value, "true" | "false" | "1" | "0"),
             Builtin::Decimal => is_decimal(value),
             Builtin::Float | Builtin::Double => is_double(value),
-            Builtin::Duration => {
-                lexical_regex(self).is_some_and(|re| re.is_match(value))
-                    && value.bytes().any(|b| b.is_ascii_digit())
-                    && !value.ends_with('T')
-            }
-            Builtin::HexBinary => {
-                value.len().is_multiple_of(2) && value.bytes().all(|b| b.is_ascii_hexdigit())
-            }
-            Builtin::Base64Binary => value
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'/' | b'=' | b' ')),
+            Builtin::Duration => lexical_regex(self).is_some_and(|re| re.is_match(value)) && value.bytes().any(|b| b.is_ascii_digit()) && !value.ends_with('T'),
+            Builtin::HexBinary => value.len().is_multiple_of(2) && value.bytes().all(|b| b.is_ascii_hexdigit()),
+            Builtin::Base64Binary => value.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'/' | b'=' | b' ')),
             _ => lexical_regex(self).is_none_or(|re| re.is_match(value)),
         };
-        if valid {
-            Ok(())
-        } else {
-            Err(self.lexical_error(value))
-        }
+        if valid { Ok(()) } else { Err(self.lexical_error(value)) }
     }
 
     fn lexical_error(self, value: &str) -> String {
@@ -249,12 +228,7 @@ impl Builtin {
     }
 }
 
-fn check_integer(
-    ty: Builtin,
-    value: &str,
-    min: Option<i128>,
-    max: Option<i128>,
-) -> Result<(), String> {
+fn check_integer(ty: Builtin, value: &str, min: Option<i128>, max: Option<i128>) -> Result<(), String> {
     let digits = value.strip_prefix(['+', '-']).unwrap_or(value);
     if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
         return Err(ty.lexical_error(value));
@@ -281,9 +255,7 @@ fn check_integer(
 fn is_decimal(value: &str) -> bool {
     let unsigned = value.strip_prefix(['+', '-']).unwrap_or(value);
     let (whole, fraction) = unsigned.split_once('.').unwrap_or((unsigned, ""));
-    (!whole.is_empty() || !fraction.is_empty())
-        && whole.bytes().all(|b| b.is_ascii_digit())
-        && fraction.bytes().all(|b| b.is_ascii_digit())
+    (!whole.is_empty() || !fraction.is_empty()) && whole.bytes().all(|b| b.is_ascii_digit()) && fraction.bytes().all(|b| b.is_ascii_digit())
 }
 
 fn is_double(value: &str) -> bool {
@@ -315,29 +287,17 @@ fn parse_number(value: &str) -> Option<f64> {
 fn lexical_regex(ty: Builtin) -> Option<&'static Regex> {
     static CACHE: [OnceLock<Regex>; 9] = [const { OnceLock::new() }; 9];
     let (slot, pattern) = match ty {
-        Builtin::Date => (
-            0,
-            r"^-?\d{4,}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])(Z|[+-]\d{2}:\d{2})?$",
-        ),
+        Builtin::Date => (0, r"^-?\d{4,}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])(Z|[+-]\d{2}:\d{2})?$"),
         Builtin::DateTime => (
             1,
             r"^-?\d{4,}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])T([01]\d|2[0-4]):[0-5]\d:[0-5]\d(\.\d+)?(Z|[+-]\d{2}:\d{2})?$",
         ),
-        Builtin::Time => (
-            2,
-            r"^([01]\d|2[0-4]):[0-5]\d:[0-5]\d(\.\d+)?(Z|[+-]\d{2}:\d{2})?$",
-        ),
-        Builtin::Duration => (
-            3,
-            r"^-?P(\d+Y)?(\d+M)?(\d+D)?(T(\d+H)?(\d+M)?(\d+(\.\d+)?S)?)?$",
-        ),
+        Builtin::Time => (2, r"^([01]\d|2[0-4]):[0-5]\d:[0-5]\d(\.\d+)?(Z|[+-]\d{2}:\d{2})?$"),
+        Builtin::Duration => (3, r"^-?P(\d+Y)?(\d+M)?(\d+D)?(T(\d+H)?(\d+M)?(\d+(\.\d+)?S)?)?$"),
         Builtin::GYear => (4, r"^-?\d{4,}(Z|[+-]\d{2}:\d{2})?$"),
         Builtin::GYearMonth => (5, r"^-?\d{4,}-(0[1-9]|1[0-2])(Z|[+-]\d{2}:\d{2})?$"),
         Builtin::GMonth => (6, r"^--(0[1-9]|1[0-2])(Z|[+-]\d{2}:\d{2})?$"),
-        Builtin::GMonthDay => (
-            7,
-            r"^--(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])(Z|[+-]\d{2}:\d{2})?$",
-        ),
+        Builtin::GMonthDay => (7, r"^--(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])(Z|[+-]\d{2}:\d{2})?$"),
         Builtin::GDay => (8, r"^---(0[1-9]|[12]\d|3[01])(Z|[+-]\d{2}:\d{2})?$"),
         _ => return None,
     };
@@ -463,10 +423,7 @@ impl SimpleInfo {
 
     /// Whether any `true` or `false` value is allowed, so the form can show a checkbox.
     pub fn is_boolean(&self) -> bool {
-        self.builtin == Builtin::Boolean
-            && !self.is_list()
-            && !self.is_union()
-            && self.enumeration.is_empty()
+        self.builtin == Builtin::Boolean && !self.is_list() && !self.is_union() && self.enumeration.is_empty()
     }
 
     fn whitespace(&self) -> Whitespace {
@@ -494,16 +451,12 @@ impl SimpleInfo {
             let items: Vec<&str> = value.split_whitespace().collect();
             self.check_length(items.len() as u64, "items")?;
             for (i, it) in items.iter().enumerate() {
-                item.validate(it)
-                    .map_err(|e| format!("Item {} ({it}): {e}", i + 1))?;
+                item.validate(it).map_err(|e| format!("Item {} ({it}): {e}", i + 1))?;
             }
         } else if self.is_union() {
             if !self.members.iter().any(|m| m.validate(&value).is_ok()) {
                 let names: Vec<String> = self.members.iter().map(SimpleInfo::summary).collect();
-                return Err(format!(
-                    "Expected a value of one of the types: {}",
-                    names.join(", ")
-                ));
+                return Err(format!("Expected a value of one of the types: {}", names.join(", ")));
             }
         } else if self.enumeration.is_empty() {
             self.builtin.check_lexical(&value)?;
@@ -514,12 +467,7 @@ impl SimpleInfo {
                 self.check_bounds(&value)?;
             }
         }
-        if !self.enumeration.is_empty()
-            && !self
-                .enumeration
-                .iter()
-                .any(|e| self.normalize(&e.value) == value)
-        {
+        if !self.enumeration.is_empty() && !self.enumeration.iter().any(|e| self.normalize(&e.value) == value) {
             let allowed: Vec<&str> = self.enumeration.iter().map(|e| e.value.as_str()).collect();
             return Err(format!("Must be one of: {}", allowed.join(", ")));
         }
@@ -546,11 +494,7 @@ impl SimpleInfo {
         if let Some(min) = &self.min
             && let Some(limit) = parse_number(&min.value)
         {
-            let ok = if min.inclusive {
-                number >= limit
-            } else {
-                number > limit
-            };
+            let ok = if min.inclusive { number >= limit } else { number > limit };
             if !ok {
                 let relation = if min.inclusive { "≥" } else { ">" };
                 return Err(format!("Must be {relation} {}", min.value));
@@ -559,11 +503,7 @@ impl SimpleInfo {
         if let Some(max) = &self.max
             && let Some(limit) = parse_number(&max.value)
         {
-            let ok = if max.inclusive {
-                number <= limit
-            } else {
-                number < limit
-            };
+            let ok = if max.inclusive { number <= limit } else { number < limit };
             if !ok {
                 let relation = if max.inclusive { "≤" } else { "<" };
                 return Err(format!("Must be {relation} {}", max.value));
@@ -575,10 +515,7 @@ impl SimpleInfo {
     fn check_patterns(&self, value: &str) -> Result<(), String> {
         for step in &self.patterns {
             // Patterns in XSD's dialect that this regex engine can't compile are skipped
-            let compiled: Vec<Regex> = step
-                .iter()
-                .filter_map(|p| Regex::new(&format!("^(?:{p})$")).ok())
-                .collect();
+            let compiled: Vec<Regex> = step.iter().filter_map(|p| Regex::new(&format!("^(?:{p})$")).ok()).collect();
             if !compiled.is_empty() && !compiled.iter().any(|re| re.is_match(value)) {
                 return Err(match step.as_slice() {
                     [pattern] => format!("Must match the pattern {pattern}"),
@@ -591,7 +528,9 @@ impl SimpleInfo {
 
     /// A value to start new places with, such as the cells of a new matrix row: zero, when the type
     /// allows it, else the first of a few simple values that it does, or its first enumerated
-    /// value. `None` when it allows none of them, as for text that isn't an enumeration.
+    /// value. A list starts with as few items as it allows, each such a value, and a union with
+    /// such a value of one of its types. `None` when it allows none of them, as for text that isn't
+    /// an enumeration.
     pub fn default_value(&self) -> Option<String> {
         let simple: &[&str] = if self.builtin.integer_range().is_some() {
             &["0", "1", "-1"]
@@ -602,13 +541,17 @@ impl SimpleInfo {
         } else {
             &[]
         };
-        let bounds = [&self.min, &self.max]
-            .into_iter()
-            .flatten()
-            .map(|bound| bound.value.clone());
+        let list = self.item.as_ref().and_then(|item| match self.length.or(self.min_length).unwrap_or(0) as usize {
+            0 => Some(String::new()),
+            n => Some(vec![item.default_value()?; n].join(" ")),
+        });
+        let members = self.members.iter().filter_map(SimpleInfo::default_value);
+        let bounds = [&self.min, &self.max].into_iter().flatten().map(|bound| bound.value.clone());
         simple
             .iter()
             .map(|value| value.to_string())
+            .chain(list)
+            .chain(members)
             .chain(self.enumeration.iter().map(|e| e.value.clone()))
             .chain(bounds)
             .find(|value| self.validate(value).is_ok())
@@ -620,26 +563,14 @@ impl SimpleInfo {
         let base = if let Some(item) = &self.item {
             format!("list of {}", item.summary())
         } else if self.is_union() {
-            self.members
-                .iter()
-                .map(SimpleInfo::summary)
-                .collect::<Vec<_>>()
-                .join(" | ")
+            self.members.iter().map(SimpleInfo::summary).collect::<Vec<_>>().join(" | ")
         } else {
             let mut base = self.builtin.xs_name().to_string();
             if let Some(min) = &self.min {
-                base.push_str(&format!(
-                    " {} {}",
-                    if min.inclusive { "≥" } else { ">" },
-                    min.value
-                ));
+                base.push_str(&format!(" {} {}", if min.inclusive { "≥" } else { ">" }, min.value));
             }
             if let Some(max) = &self.max {
-                base.push_str(&format!(
-                    " {} {}",
-                    if max.inclusive { "≤" } else { "<" },
-                    max.value
-                ));
+                base.push_str(&format!(" {} {}", if max.inclusive { "≤" } else { "<" }, max.value));
             }
             base
         };
@@ -665,9 +596,7 @@ mod tests {
     #[test]
     fn numbers() {
         let double = builtin(Builtin::Double);
-        for ok in [
-            "1", "-1.5", "5.0e-6", "10.0E+3", ".5", "5.", "INF", "-INF", "NaN", "  2.5 ",
-        ] {
+        for ok in ["1", "-1.5", "5.0e-6", "10.0E+3", ".5", "5.", "INF", "-INF", "NaN", "  2.5 "] {
             assert!(double.validate(ok).is_ok(), "{ok} is a double");
         }
         for bad in ["", "abc", "1e", "1.2.3", "inf", "1,5", "e5"] {
@@ -676,19 +605,9 @@ mod tests {
         let count = builtin(Builtin::NonNegativeInteger);
         assert!(count.validate("0").is_ok());
         assert!(count.validate("+10").is_ok());
-        assert!(
-            count
-                .validate("123456789012345678901234567890123456789012345")
-                .is_ok()
-        );
-        assert_eq!(
-            count.validate("-1").unwrap_err(),
-            "Must be a whole number, 0 or more"
-        );
-        assert_eq!(
-            count.validate("1.5").unwrap_err(),
-            "Expected a whole number, 0 or more"
-        );
+        assert!(count.validate("123456789012345678901234567890123456789012345").is_ok());
+        assert_eq!(count.validate("-1").unwrap_err(), "Must be a whole number, 0 or more");
+        assert_eq!(count.validate("1.5").unwrap_err(), "Expected a whole number, 0 or more");
         assert_eq!(
             builtin(Builtin::Int).validate("3000000000").unwrap_err(),
             "Must be a whole number from -2147483648 to 2147483647"
@@ -726,10 +645,7 @@ mod tests {
             ..Facets::default()
         });
         assert!(method.validate("picard").is_ok());
-        assert_eq!(
-            method.validate("newton").unwrap_err(),
-            "Must be one of: picard, newton_krylov"
-        );
+        assert_eq!(method.validate("newton").unwrap_err(), "Must be one of: picard, newton_krylov");
 
         let mut code = builtin(Builtin::Token);
         code.restrict(&Facets {
@@ -745,10 +661,7 @@ mod tests {
         let list = SimpleInfo::list(builtin(Builtin::Double));
         assert!(list.validate("0.1 0.2  0.3").is_ok());
         assert!(list.validate("").is_ok());
-        assert_eq!(
-            list.validate("0.1 x").unwrap_err(),
-            "Item 2 (x): Expected a number, such as 1.5 or 2.0e-3"
-        );
+        assert_eq!(list.validate("0.1 x").unwrap_err(), "Item 2 (x): Expected a number, such as 1.5 or 2.0e-3");
         assert_eq!(list.summary(), "list of double");
 
         let boolean = builtin(Builtin::Boolean);
@@ -759,15 +672,9 @@ mod tests {
 
     #[test]
     fn default_values() {
-        assert_eq!(
-            builtin(Builtin::Double).default_value().as_deref(),
-            Some("0.0")
-        );
+        assert_eq!(builtin(Builtin::Double).default_value().as_deref(), Some("0.0"));
         assert_eq!(builtin(Builtin::Int).default_value().as_deref(), Some("0"));
-        assert_eq!(
-            builtin(Builtin::PositiveInteger).default_value().as_deref(),
-            Some("1")
-        );
+        assert_eq!(builtin(Builtin::PositiveInteger).default_value().as_deref(), Some("1"));
         let mut above_two = builtin(Builtin::Double);
         above_two.restrict(&Facets {
             min: Some(Bound {
@@ -777,10 +684,7 @@ mod tests {
             ..Facets::default()
         });
         assert_eq!(above_two.default_value().as_deref(), Some("2.5"));
-        assert_eq!(
-            builtin(Builtin::Boolean).default_value().as_deref(),
-            Some("false")
-        );
+        assert_eq!(builtin(Builtin::Boolean).default_value().as_deref(), Some("false"));
         assert_eq!(builtin(Builtin::String).default_value(), None);
     }
 
@@ -788,11 +692,7 @@ mod tests {
     fn dates() {
         assert!(builtin(Builtin::Date).validate("2024-12-31").is_ok());
         assert!(builtin(Builtin::Date).validate("2024-13-01").is_err());
-        assert!(
-            builtin(Builtin::DateTime)
-                .validate("2024-12-31T23:59:00Z")
-                .is_ok()
-        );
+        assert!(builtin(Builtin::DateTime).validate("2024-12-31T23:59:00Z").is_ok());
         assert!(builtin(Builtin::Duration).validate("PT30S").is_ok());
         assert!(builtin(Builtin::Duration).validate("P").is_err());
         assert!(builtin(Builtin::Duration).validate("P1DT").is_err());

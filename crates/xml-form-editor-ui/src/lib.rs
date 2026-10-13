@@ -10,13 +10,11 @@ mod rows;
 use std::collections::{HashMap, VecDeque};
 use std::ops::Deref;
 use std::sync::Arc;
+use std::time::Duration;
 
 use leptos::prelude::*;
 use wasm_bindgen::prelude::*;
-use xml_form_editor_core::{
-    EditOp, Form, FormNode, Linked, NodeKind, Note, Problems, Schema, XmlError, apply_edit,
-    build_form, schema_location, values,
-};
+use xml_form_editor_core::{EditOp, Form, FormNode, Linked, NodeKind, Note, Problems, Schema, XmlError, apply_edit, build_form, schema_location, values};
 
 use crate::bridge::{In, Out};
 use crate::rows::{Folding, Row, Values, Versions};
@@ -82,9 +80,7 @@ impl SchemaState {
     fn location(&self) -> Option<&str> {
         match self {
             SchemaState::Unknown | SchemaState::Unnamed => None,
-            SchemaState::Loading { location }
-            | SchemaState::Loaded { location, .. }
-            | SchemaState::Failed { location, .. } => Some(location),
+            SchemaState::Loading { location } | SchemaState::Loaded { location, .. } | SchemaState::Failed { location, .. } => Some(location),
         }
     }
 }
@@ -109,6 +105,9 @@ struct Doc {
     // The file as last saved, and as it was when the form opened, to mark the values that changed
     saved: RwSignal<Option<Arc<str>>>,
     original: RwSignal<Option<Arc<str>>>,
+    /// Whether the document differs from the file as saved. VS Code counts a document as dirty
+    /// from its first edit until it's saved, even when the edits put back what was there.
+    changed: Memo<bool>,
     schema: RwSignal<SchemaState>,
     /// `None` until there's a document, and while its schema loads
     built: Memo<Option<Built>>,
@@ -121,30 +120,35 @@ impl Doc {
     /// whenever the document names a different one.
     fn new(uri: Arc<str>) -> Doc {
         let xml = RwSignal::new(None::<XmlText>);
+        let dirty = RwSignal::new(false);
         let schema = RwSignal::new(SchemaState::Unknown);
         let saved = RwSignal::new(None::<Arc<str>>);
         let original = RwSignal::new(None::<Arc<str>>);
+        // Without the saved text, as for a file that has never been saved, VS Code's word goes
+        let changed = Memo::new(move |_| {
+            dirty.get()
+                && xml.with(|xml| {
+                    saved.with(|saved| match (xml, saved) {
+                        (Some(xml), Some(saved)) => *xml.text != **saved,
+                        _ => true,
+                    })
+                })
+        });
 
         // The schema the document names; `None` while there's no document, or it isn't well-formed
-        let named_schema = Memo::new(move |_| {
-            xml.with(|x| x.as_ref().and_then(|x| schema_location(&x.text).ok()))
-        });
+        let named_schema = Memo::new(move |_| xml.with(|x| x.as_ref().and_then(|x| schema_location(&x.text).ok())));
 
         Effect::new(move |_| {
             let Some(named) = named_schema.get() else {
                 return;
             };
-            let known = schema.with_untracked(|s| {
-                !matches!(s, SchemaState::Unknown) && s.location() == named.as_deref()
-            });
+            let known = schema.with_untracked(|s| !matches!(s, SchemaState::Unknown) && s.location() == named.as_deref());
             if known {
                 return;
             }
             match named {
                 Some(location) => {
-                    schema.set(SchemaState::Loading {
-                        location: location.clone(),
-                    });
+                    schema.set(SchemaState::Loading { location: location.clone() });
                     bridge::post(&Out::RequestSchema {
                         document: uri.to_string(),
                         location,
@@ -158,8 +162,7 @@ impl Doc {
             let xml = xml.get()?;
             let state = schema.get();
             let named = named_schema.get().flatten();
-            if matches!(state, SchemaState::Loading { .. }) || state.location() != named.as_deref()
-            {
+            if matches!(state, SchemaState::Loading { .. }) || state.location() != named.as_deref() {
                 return None;
             }
             let schema = match state {
@@ -171,9 +174,10 @@ impl Doc {
 
         Doc {
             xml,
-            dirty: RwSignal::new(false),
+            dirty,
             saved,
             original,
+            changed,
             schema,
             built,
             saved_values: Memo::new(move |_| saved.with(version_values)),
@@ -183,19 +187,16 @@ impl Doc {
 
     /// Takes a version of the document from the extension; whether its text changed.
     fn receive(&self, text: String, version: f64, dirty: bool) -> bool {
-        // Only enables Save: the saved text comes in `saved`, as this can lag behind edits
+        // Only enables Save, with `changed`: the saved text comes in `saved`, as this can lag
+        // behind edits
         if self.dirty.get_untracked() != dirty {
             self.dirty.set(dirty);
         }
-        let unchanged = self.xml.with_untracked(|x| {
-            x.as_ref()
-                .is_some_and(|x| x.version == version && *x.text == *text)
-        });
+        let unchanged = self
+            .xml
+            .with_untracked(|x| x.as_ref().is_some_and(|x| x.version == version && *x.text == *text));
         if !unchanged {
-            self.xml.set(Some(XmlText {
-                text: text.into(),
-                version,
-            }));
+            self.xml.set(Some(XmlText { text: text.into(), version }));
         }
         !unchanged
     }
@@ -209,18 +210,9 @@ impl Doc {
         }
     }
 
-    fn receive_schema(
-        &self,
-        location: String,
-        path: Option<String>,
-        text: Option<String>,
-        error: Option<String>,
-    ) {
+    fn receive_schema(&self, location: String, path: Option<String>, text: Option<String>, error: Option<String>) {
         // A reply to an earlier request
-        if self
-            .schema
-            .with_untracked(|s| s.location() != Some(location.as_str()))
-        {
+        if self.schema.with_untracked(|s| s.location() != Some(location.as_str())) {
             return;
         }
         let path = path.unwrap_or_else(|| location.clone());
@@ -281,13 +273,7 @@ type Links = RwSignal<HashMap<(Arc<str>, String), LinkState>>;
 /// Puts the contents of the files that `node` and the elements in it link to in place (see
 /// [`FormNode::linked`]), or notes why it can't. `node` is in `document`, the last of `chain`,
 /// which holds the documents above it, so that a link back to one of them stops there.
-fn attach_links(
-    node: &mut FormNode,
-    document: &Arc<str>,
-    chain: &mut Vec<Arc<str>>,
-    docs: Docs,
-    links: Links,
-) {
+fn attach_links(node: &mut FormNode, document: &Arc<str>, chain: &mut Vec<Arc<str>>, docs: Docs, links: Links) {
     let NodeKind::Section { children } = &mut node.kind else {
         return;
     };
@@ -327,12 +313,10 @@ fn attach_links(
         Ok(form) => {
             let mut root = form.root.clone();
             match doc.schema.get() {
-                SchemaState::Failed { message, .. } => root.notes.push(Note::warning(format!(
-                    "{message} The values of {href} are edited as text, without checking."
-                ))),
-                SchemaState::Loaded { schema, .. } => root
+                SchemaState::Failed { message, .. } => root
                     .notes
-                    .extend(schema.warnings().iter().map(|w| Note::warning(w.clone()))),
+                    .push(Note::warning(format!("{message} The values of {href} are edited as text, without checking."))),
+                SchemaState::Loaded { schema, .. } => root.notes.extend(schema.warnings().iter().map(|w| Note::warning(w.clone()))),
                 _ => {}
             }
             chain.push(target.clone());
@@ -348,6 +332,10 @@ fn attach_links(
 
 /// How often an edit is tried before giving up, when the document keeps changing under it.
 const MAX_ATTEMPTS: u32 = 3;
+
+/// How long something that an edit makes, such as a new item of a list or the first cell of a new
+/// matrix row, waits to be focused.
+pub(crate) const FOCUS_WAIT: Duration = Duration::from_secs(3);
 
 /// Edits wait here while another is applied, so that each is made against the text it changes:
 /// one made against text that has since changed would be refused.
@@ -379,17 +367,34 @@ pub(crate) struct Ctx {
     queue: StoredValue<EditQueue>,
     /// The rows the page shows, which a matrix's grid follows (see [`Row::key`])
     pub(crate) rows: Memo<Vec<Row>>,
+    /// The key of a row to focus when it shows (see [`rows::Place::key`])
+    focus: StoredValue<Option<String>>,
 }
 
 impl Ctx {
+    /// Focuses the row with this key when it shows, as an edit makes it, unless it takes too long.
+    pub(crate) fn focus_when_shown(&self, key: String) {
+        let focus = self.focus;
+        focus.set_value(Some(key.clone()));
+        set_timeout(
+            move || {
+                focus.update_value(|wanted| {
+                    wanted.take_if(|wanted| *wanted == key);
+                })
+            },
+            FOCUS_WAIT,
+        );
+    }
+
+    /// Whether the row with this key, which is showing, is to be focused. It's then no longer.
+    pub(crate) fn take_focus(&self, key: &str) -> bool {
+        self.focus
+            .try_update_value(|wanted| wanted.take_if(|wanted| wanted == key).is_some())
+            .unwrap_or(false)
+    }
+
     pub(crate) fn edit(&self, document: Arc<str>, op: EditOp) {
-        self.queue.update_value(|queue| {
-            queue.waiting.push_back(Pending {
-                document,
-                op,
-                attempts: 0,
-            })
-        });
+        self.queue.update_value(|queue| queue.waiting.push_back(Pending { document, op, attempts: 0 }));
         self.send_next();
     }
 
@@ -398,19 +403,12 @@ impl Ctx {
         loop {
             let next = self
                 .queue
-                .try_update_value(|queue| {
-                    if queue.in_flight.is_some() {
-                        None
-                    } else {
-                        queue.waiting.pop_front()
-                    }
-                })
+                .try_update_value(|queue| if queue.in_flight.is_some() { None } else { queue.waiting.pop_front() })
                 .flatten();
             let Some(pending) = next else { return };
-            let xml = self.docs.with_untracked(|docs| {
-                docs.get(&pending.document)
-                    .and_then(|doc| doc.xml.get_untracked())
-            });
+            let xml = self
+                .docs
+                .with_untracked(|docs| docs.get(&pending.document).and_then(|doc| doc.xml.get_untracked()));
             let Some(xml) = xml else {
                 self.failure.set(Some(format!(
                     "Could not change {}: {} is not open",
@@ -469,11 +467,8 @@ impl Ctx {
             .flatten();
         if let Some(edit) = gave_up {
             let reason = error.unwrap_or_else(|| "the document kept changing".to_string());
-            self.failure.set(Some(format!(
-                "Could not change {} in {}: {reason}",
-                edit.op.path(),
-                file_name(&edit.document)
-            )));
+            self.failure
+                .set(Some(format!("Could not change {} in {}: {reason}", edit.op.path(), file_name(&edit.document))));
         }
         self.send_next();
     }
@@ -517,23 +512,12 @@ fn App() -> impl IntoView {
         let wanted: Vec<(Arc<str>, String)> = docs.with(|docs| {
             docs.iter()
                 .flat_map(|(uri, doc)| {
-                    let hrefs = doc.built.with(|built| {
-                        built
-                            .as_ref()
-                            .and_then(form_of)
-                            .map(Form::links)
-                            .unwrap_or_default()
-                    });
+                    let hrefs = doc.built.with(|built| built.as_ref().and_then(form_of).map(Form::links).unwrap_or_default());
                     hrefs.into_iter().map(|href| (uri.clone(), href))
                 })
                 .collect()
         });
-        let new: Vec<_> = links.with_untracked(|links| {
-            wanted
-                .into_iter()
-                .filter(|key| !links.contains_key(key))
-                .collect()
-        });
+        let new: Vec<_> = links.with_untracked(|links| wanted.into_iter().filter(|key| !links.contains_key(key)).collect());
         if new.is_empty() {
             return;
         }
@@ -561,11 +545,7 @@ fn App() -> impl IntoView {
         let (Some(form), Some(uri)) = (composed.get(), main.get()) else {
             return Vec::new();
         };
-        let versions: HashMap<Arc<str>, Versions> = docs.with(|docs| {
-            docs.iter()
-                .map(|(uri, doc)| (uri.clone(), doc.versions()))
-                .collect()
-        });
+        let versions: HashMap<Arc<str>, Versions> = docs.with(|docs| docs.iter().map(|(uri, doc)| (uri.clone(), doc.versions())).collect());
         expanded.with(|expanded| {
             filter.with(|filter| {
                 rows::rows(
@@ -588,6 +568,7 @@ fn App() -> impl IntoView {
         failure,
         queue,
         rows,
+        focus: StoredValue::new(None),
     };
 
     bridge::on_message(move |message| {
@@ -640,9 +621,7 @@ fn App() -> impl IntoView {
                 };
                 let state = match (uri, error) {
                     (Some(uri), _) => LinkState::Open(uri.into()),
-                    (None, error) => {
-                        LinkState::Failed(error.unwrap_or_else(|| format!("Could not open {href}")))
-                    }
+                    (None, error) => LinkState::Failed(error.unwrap_or_else(|| format!("Could not open {href}"))),
                 };
                 links.update(|links| {
                     links.insert((document.into(), href), state);
@@ -652,29 +631,19 @@ fn App() -> impl IntoView {
         }
     });
 
-    let problems = Memo::new(move |_| {
-        composed.with(|form| form.as_ref().map(|f| f.problems()).unwrap_or_default())
-    });
+    let problems = Memo::new(move |_| composed.with(|form| form.as_ref().map(|f| f.problems()).unwrap_or_default()));
 
     // Whether any file the form shows has unsaved changes
-    let dirty = Memo::new(move |_| docs.with(|docs| docs.values().any(|doc| doc.dirty.get())));
+    let dirty = Memo::new(move |_| docs.with(|docs| docs.values().any(|doc| doc.changed.get())));
 
     let set_all = move |open: bool| {
-        let keys = composed.with_untracked(|form| {
-            form.as_ref()
-                .map(|f| rows::section_keys(f))
-                .unwrap_or_default()
-        });
+        let keys = composed.with_untracked(|form| form.as_ref().map(|f| rows::section_keys(f)).unwrap_or_default());
         expanded.update(|sections| sections.extend(keys.into_iter().map(|key| (key, open))));
     };
 
     // Opens the sections that hold problems and scrolls to the first one
     let show_problems = move |_| {
-        let keys = composed.with_untracked(|form| {
-            form.as_ref()
-                .map(|f| rows::sections_with_problems(f))
-                .unwrap_or_default()
-        });
+        let keys = composed.with_untracked(|form| form.as_ref().map(|f| rows::sections_with_problems(f)).unwrap_or_default());
         filter.set(String::new());
         hide_unused.set(false);
         expanded.update(|sections| sections.extend(keys.into_iter().map(|key| (key, true))));
@@ -777,19 +746,13 @@ fn schema_status(state: SchemaState, document: Arc<str>) -> AnyView {
             }
             .into_any()
         }
-        SchemaState::Failed { message, .. } => {
-            view! { <div class="banner error">{message} " Values are edited as text, without checking."</div> }.into_any()
-        }
+        SchemaState::Failed { message, .. } => view! { <div class="banner error">{message} " Values are edited as text, without checking."</div> }.into_any(),
     }
 }
 
 fn problem_label(problems: Problems) -> String {
     let count = |n: usize, what: &str| {
-        if n == 1 {
-            format!("1 {what}")
-        } else {
-            format!("{n} {what}s")
-        }
+        if n == 1 { format!("1 {what}") } else { format!("{n} {what}s") }
     };
     match (problems.errors, problems.warnings) {
         (errors, 0) => count(errors, "error"),

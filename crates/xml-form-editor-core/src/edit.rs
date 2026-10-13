@@ -6,66 +6,51 @@ use std::ops::Range;
 
 use roxmltree::Node;
 
+use crate::form::{NewContent, NewElement};
 use crate::text::{Utf16Offsets, escape_attribute, escape_text};
-use crate::xml::{
-    Path, StartTag, XSI_NS, content_range, is_nil, is_space, is_xsi_nil, parse, scan_start_tag,
-};
+use crate::xml::{Path, StartTag, XSI_NS, content_range, is_nil, is_space, is_xsi_nil, parse, scan_start_tag};
 
 /// A change the form makes. The form changes values: it never adds or removes elements or
 /// attributes (though making an element nil adds `xsi:nil`, and giving it a value removes it),
-/// except the rows of a matrix (see [`crate::Matrix`]).
+/// except the items of lists (see [`crate::List`]) and the rows of a matrix (see
+/// [`crate::Matrix`]).
 ///
 /// A matrix is an element whose elements called `name` are its rows, each holding a list of
 /// values; its columns are the values at each position in the lists.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum EditOp {
     /// Sets an element's content, removing `xsi:nil` if the element was nil.
     SetValue { path: Path, value: String },
     /// Makes an element nil: adds `xsi:nil="true"` and removes its content.
     SetNil { path: Path },
     /// Sets the value of an attribute the element already has, named as written.
-    SetAttribute {
-        path: Path,
-        name: String,
-        value: String,
-    },
+    SetAttribute { path: Path, name: String, value: String },
     /// Sets the value in column `column`, counting from 0, of the matrix row at `path`. A shorter
     /// row is first padded with `fill`.
-    SetCell {
-        path: Path,
-        column: usize,
-        value: String,
-        fill: String,
-    },
+    SetCell { path: Path, column: usize, value: String, fill: String },
     /// Adds a row holding `value` to the matrix at `path`, before its row `index`, or after its
     /// last row when it has no more.
-    InsertRow {
-        path: Path,
-        name: String,
-        index: usize,
-        value: String,
-    },
-    /// Removes the matrix row at `path`. Removing the last row leaves the matrix empty: `<m/>`.
-    RemoveRow { path: Path },
+    InsertRow { path: Path, name: String, index: usize, value: String },
+    /// Removes the element at `path`, such as an item of a list or a row of a matrix, with its
+    /// line when it's on one of its own. Removing the only element in an element leaves that
+    /// empty: `<m/>`.
+    RemoveElement { path: Path },
+    /// Adds a copy of the element at `path` after it, as a new item of a list.
+    InsertCopy { path: Path },
+    /// Adds `element` to the element at `path`, after the last of its elements named in `after`,
+    /// or else first, as the first item of a list.
+    InsertElement { path: Path, after: Vec<String>, element: NewElement },
     /// Adds `value` to each row of the matrix at `path`, before its column `index`. Rows too short
     /// to have that column are padded with `value`.
-    InsertColumn {
-        path: Path,
-        name: String,
-        index: usize,
-        value: String,
-    },
+    InsertColumn { path: Path, name: String, index: usize, value: String },
     /// Removes column `index` from each row of the matrix at `path` that has it.
-    RemoveColumn {
-        path: Path,
-        name: String,
-        index: usize,
-    },
+    RemoveColumn { path: Path, name: String, index: usize },
 }
 
 impl EditOp {
-    /// The element the change is made to: the one whose value or attribute it sets, the matrix
-    /// whose rows or columns it adds or removes, or the row whose value it sets or that it removes.
+    /// The element the change is made to: the one whose value or attribute it sets, that it
+    /// removes or copies, that it adds an element to, or the matrix whose columns it adds or
+    /// removes.
     pub fn path(&self) -> &Path {
         match self {
             EditOp::SetValue { path, .. }
@@ -73,7 +58,9 @@ impl EditOp {
             | EditOp::SetAttribute { path, .. }
             | EditOp::SetCell { path, .. }
             | EditOp::InsertRow { path, .. }
-            | EditOp::RemoveRow { path }
+            | EditOp::RemoveElement { path }
+            | EditOp::InsertCopy { path }
+            | EditOp::InsertElement { path, .. }
             | EditOp::InsertColumn { path, .. }
             | EditOp::RemoveColumn { path, .. } => path,
         }
@@ -105,11 +92,8 @@ type ByteEdit = (Range<usize>, String);
 pub fn apply_edit(xml: &str, op: &EditOp) -> Result<Vec<TextEdit>, EditError> {
     let doc = parse(xml).map_err(|e| EditError(format!("The XML is not well-formed: {e}")))?;
     let path = op.path();
-    let node = path
-        .find(&doc)
-        .ok_or_else(|| EditError(format!("{path} is no longer in the document")))?;
-    let tag = scan_start_tag(xml, node.range().start)
-        .ok_or_else(|| EditError(format!("Could not read the start tag of {path}")))?;
+    let node = path.find(&doc).ok_or_else(|| EditError(format!("{path} is no longer in the document")))?;
+    let tag = scan_start_tag(xml, node.range().start).ok_or_else(|| EditError(format!("Could not read the start tag of {path}")))?;
     let edits = match op {
         EditOp::SetValue { value, .. } => set_value(xml, node, &tag, value),
         EditOp::SetNil { .. } => set_nil(xml, node, &tag),
@@ -119,30 +103,15 @@ pub fn apply_edit(xml: &str, op: &EditOp) -> Result<Vec<TextEdit>, EditError> {
                 .iter()
                 .find(|a| &xml[a.name.clone()] == name)
                 .ok_or_else(|| EditError(format!("{path} has no attribute {name}")))?;
-            vec![(
-                attribute.value.clone(),
-                escape_attribute(value, attribute.quote),
-            )]
+            vec![(attribute.value.clone(), escape_attribute(value, attribute.quote))]
         }
-        EditOp::SetCell {
-            column,
-            value,
-            fill,
-            ..
-        } => set_cell(xml, node, &tag, *column, value, fill),
-        EditOp::InsertRow {
-            name, index, value, ..
-        } => insert_row(xml, node, &tag, name, *index, value),
-        EditOp::RemoveRow { .. } => remove_row(xml, node)
-            .ok_or_else(|| EditError(format!("{path} is not a row, so it can't be removed")))?,
-        EditOp::InsertColumn {
-            name, index, value, ..
-        } => each_row(xml, node, name, |row, tag| {
-            insert_item(xml, row, tag, *index, value)
-        }),
-        EditOp::RemoveColumn { name, index, .. } => each_row(xml, node, name, |row, tag| {
-            remove_item(xml, row, tag, *index)
-        }),
+        EditOp::SetCell { column, value, fill, .. } => set_cell(xml, node, &tag, *column, value, fill),
+        EditOp::InsertRow { name, index, value, .. } => insert_row(xml, node, &tag, name, *index, value),
+        EditOp::RemoveElement { .. } => remove_element(xml, node).ok_or_else(|| EditError(format!("{path} is the root element, so it can't be removed")))?,
+        EditOp::InsertCopy { .. } => insert_copy(xml, node).ok_or_else(|| EditError(format!("{path} is the root element, so it can't be copied")))?,
+        EditOp::InsertElement { after, element, .. } => insert_element(xml, node, &tag, after, element),
+        EditOp::InsertColumn { name, index, value, .. } => each_row(xml, node, name, |row, tag| insert_item(xml, row, tag, *index, value)),
+        EditOp::RemoveColumn { name, index, .. } => each_row(xml, node, name, |row, tag| remove_item(xml, row, tag, *index)),
     };
     let offsets = Utf16Offsets::new(xml);
     Ok(merge(xml, edits)
@@ -164,10 +133,7 @@ fn set_value(src: &str, node: Node, tag: &StartTag, value: &str) -> Vec<ByteEdit
     match content_range(src, node, tag) {
         Some(content) => edits.push((content, text)),
         // `<x/>` becomes `<x>value</x>`
-        None => edits.push((
-            tag.tail..tag.end,
-            format!(">{text}</{}>", &src[tag.name.clone()]),
-        )),
+        None => edits.push((tag.tail..tag.end, format!(">{text}</{}>", &src[tag.name.clone()]))),
     }
     edits
 }
@@ -185,10 +151,7 @@ fn set_nil(src: &str, node: Node, tag: &StartTag) -> Vec<ByteEdit> {
             }
         }
         None => {
-            let attribute = match node
-                .lookup_prefix(XSI_NS)
-                .filter(|prefix| !prefix.is_empty())
-            {
+            let attribute = match node.lookup_prefix(XSI_NS).filter(|prefix| !prefix.is_empty()) {
                 Some(prefix) => format!(" {prefix}:nil=\"true\""),
                 None => format!(" xmlns:xsi=\"{XSI_NS}\" xsi:nil=\"true\""),
             };
@@ -205,11 +168,7 @@ fn set_nil(src: &str, node: Node, tag: &StartTag) -> Vec<ByteEdit> {
 /// Where the values of a list are written in an element's content: the content, and each value in
 /// it. `None` when the content isn't plain text, as in `<row/>`, a nil element, or content with
 /// comments or entities, which the edits write anew rather than pick apart.
-fn written_items(
-    src: &str,
-    node: Node,
-    tag: &StartTag,
-) -> Option<(Range<usize>, Vec<Range<usize>>)> {
+fn written_items(src: &str, node: Node, tag: &StartTag) -> Option<(Range<usize>, Vec<Range<usize>>)> {
     let content = content_range(src, node, tag)?;
     if is_nil(node) || src[content.clone()].contains(['<', '&']) {
         return None;
@@ -236,22 +195,11 @@ fn items(node: Node) -> Vec<String> {
     if is_nil(node) {
         return Vec::new();
     }
-    let text: String = node
-        .children()
-        .filter(|c| c.is_text())
-        .filter_map(|c| c.text())
-        .collect();
+    let text: String = node.children().filter(|c| c.is_text()).filter_map(|c| c.text()).collect();
     text.split_whitespace().map(str::to_string).collect()
 }
 
-fn set_cell(
-    src: &str,
-    node: Node,
-    tag: &StartTag,
-    column: usize,
-    value: &str,
-    fill: &str,
-) -> Vec<ByteEdit> {
+fn set_cell(src: &str, node: Node, tag: &StartTag, column: usize, value: &str, fill: &str) -> Vec<ByteEdit> {
     let Some((content, written)) = written_items(src, node, tag) else {
         let mut values = items(node);
         if values.len() <= column {
@@ -315,12 +263,7 @@ fn remove_item(src: &str, node: Node, tag: &StartTag, index: usize) -> Vec<ByteE
 }
 
 /// The edits `edit` makes to each row of the matrix `matrix`: its elements called `name`.
-fn each_row(
-    src: &str,
-    matrix: Node,
-    name: &str,
-    edit: impl Fn(Node, &StartTag) -> Vec<ByteEdit>,
-) -> Vec<ByteEdit> {
+fn each_row(src: &str, matrix: Node, name: &str, edit: impl Fn(Node, &StartTag) -> Vec<ByteEdit>) -> Vec<ByteEdit> {
     matrix
         .children()
         .filter(|c| c.is_element() && c.tag_name().name() == name)
@@ -332,23 +275,11 @@ fn each_row(
 /// Adds a row, written as the rows around it are: named as they're written, with any prefix, and
 /// on a line of its own when they are. The first row goes on a line of its own when the matrix
 /// is on one, indented one step further.
-fn insert_row(
-    src: &str,
-    matrix: Node,
-    tag: &StartTag,
-    name: &str,
-    index: usize,
-    value: &str,
-) -> Vec<ByteEdit> {
-    let rows: Vec<Node> = matrix
-        .children()
-        .filter(|c| c.is_element() && c.tag_name().name() == name)
-        .collect();
+fn insert_row(src: &str, matrix: Node, tag: &StartTag, name: &str, index: usize, value: &str) -> Vec<ByteEdit> {
+    let rows: Vec<Node> = matrix.children().filter(|c| c.is_element() && c.tag_name().name() == name).collect();
     let value = escape_text(value);
     let element = |like: Option<Node>| {
-        let name = like
-            .and_then(|row| scan_start_tag(src, row.range().start))
-            .map_or(name, |tag| &src[tag.name]);
+        let name = like.and_then(|row| scan_start_tag(src, row.range().start)).map_or(name, |tag| &src[tag.name]);
         format!("<{name}>{value}</{name}>")
     };
     if let Some(&next) = rows.get(index) {
@@ -357,30 +288,36 @@ fn insert_row(
         return vec![(start..start, format!("{}{lead}", element(Some(next))))];
     }
     if let Some(&last) = rows.last() {
-        let (start, end) = (last.range().start, last.range().end);
-        let lead = lead(src, start);
+        let (end, lead) = after_element(src, last);
         return vec![(end..end, format!("{lead}{}", element(Some(last))))];
     }
-    let element = element(None);
-    // Where the row starts, and the matrix's end tag
-    let (before, after) = match line_lead(src, matrix.range().start) {
-        Some((newline, indent)) => {
-            let step = indent_step(src, matrix, indent);
-            (
-                format!("{newline}{indent}{step}"),
-                format!("{newline}{indent}"),
-            )
+    insert_first(src, matrix, tag, |_| element(None))
+}
+
+/// Adds an element to `parent`, which holds no elements: on a line of its own when `parent` is on
+/// one, indented one step further. `write` writes the element, given its layout when it's on a
+/// line of its own.
+fn insert_first(src: &str, parent: Node, tag: &StartTag, write: impl FnOnce(Option<&Layout>) -> String) -> Vec<ByteEdit> {
+    let parent_line = line_lead(src, parent.range().start);
+    let layout = parent_line.map(|(newline, indent)| {
+        let step = indent_step(src, parent, indent);
+        Layout {
+            newline,
+            indent: format!("{indent}{step}"),
+            step,
         }
-        None => (String::new(), String::new()),
+    });
+    let element = write(layout.as_ref());
+    // Where the element starts, and the parent's end tag
+    let (before, after) = match (&layout, parent_line) {
+        (Some(layout), Some((newline, indent))) => (format!("{newline}{}", layout.indent), format!("{newline}{indent}")),
+        _ => (String::new(), String::new()),
     };
     if tag.self_closing {
-        let matrix_name = &src[tag.name.clone()];
-        return vec![(
-            tag.tail..tag.end,
-            format!(">{before}{element}{after}</{matrix_name}>"),
-        )];
+        let parent_name = &src[tag.name.clone()];
+        return vec![(tag.tail..tag.end, format!(">{before}{element}{after}</{parent_name}>"))];
     }
-    let Some(content) = content_range(src, matrix, tag) else {
+    let Some(content) = content_range(src, parent, tag) else {
         return Vec::new();
     };
     if src[content.clone()].trim().is_empty() {
@@ -391,19 +328,149 @@ fn insert_row(
     vec![(end..end, format!("{before}{element}"))]
 }
 
-/// Removes a row with the line break and indentation before it, so that its line goes. `None` for
-/// the root element, which isn't a row.
-fn remove_row(src: &str, row: Node) -> Option<Vec<ByteEdit>> {
-    let matrix = row.parent_element()?;
-    let only = matrix
+/// Removes an element: with its line, when it's on one of its own, or else with the whitespace
+/// that separates it from what's before. `None` for the root element.
+fn remove_element(src: &str, node: Node) -> Option<Vec<ByteEdit>> {
+    let parent = node.parent_element()?;
+    let only = parent
         .children()
-        .all(|c| c == row || (c.is_text() && c.text().is_some_and(|t| t.trim().is_empty())));
+        .all(|c| c == node || (c.is_text() && c.text().is_some_and(|t| t.trim().is_empty())));
     if only {
-        let tag = scan_start_tag(src, matrix.range().start)?;
-        return Some(vec![(tag.tail..matrix.range().end, "/>".to_string())]);
+        let tag = scan_start_tag(src, parent.range().start)?;
+        return Some(vec![(tag.tail..parent.range().end, "/>".to_string())]);
     }
-    let (start, end) = (row.range().start, row.range().end);
-    Some(vec![(start - lead(src, start).len()..end, String::new())])
+    let (start, end) = (node.range().start, node.range().end);
+    let range = match (line_lead(src, start), line_end(src, end)) {
+        // With the comments after it on its line, which are about it
+        (Some(_), Some(line_end)) => start - lead(src, start).len()..line_end,
+        // What follows it on its line moves up to where it was
+        (Some(_), None) => {
+            let b = src.as_bytes();
+            let mut next = end;
+            while next < b.len() && matches!(b[next], b' ' | b'\t') {
+                next += 1;
+            }
+            start..next
+        }
+        (None, _) => start - lead(src, start).len()..end,
+    };
+    Some(vec![(range, String::new())])
+}
+
+/// Adds a copy of an element after it (see [`after_element`]). `None` for the root element, which
+/// can't have a sibling.
+fn insert_copy(src: &str, node: Node) -> Option<Vec<ByteEdit>> {
+    node.parent_element()?;
+    let (end, lead) = after_element(src, node);
+    Some(vec![(end..end, format!("{lead}{}", &src[node.range()]))])
+}
+
+/// Adds `element` to `parent`, written as the elements around it are: after the last of `parent`'s
+/// elements named in `after`, or else before its first element.
+fn insert_element(src: &str, parent: Node, tag: &StartTag, after: &[String], element: &NewElement) -> Vec<ByteEdit> {
+    let write = |layout: Option<&Layout>| {
+        let mut out = String::new();
+        write_new(element, layout, 0, &mut out);
+        out
+    };
+    let elements: Vec<Node> = parent.children().filter(Node::is_element).collect();
+    let previous = elements.iter().rev().find(|e| after.iter().any(|name| name == e.tag_name().name()));
+    if let Some(&previous) = previous {
+        let (end, lead) = after_element(src, previous);
+        let text = write(layout_beside(src, previous).as_ref());
+        return vec![(end..end, format!("{lead}{text}"))];
+    }
+    if let Some(&first) = elements.first() {
+        let start = first.range().start;
+        let text = write(layout_beside(src, first).as_ref());
+        return vec![(start..start, format!("{text}{}", lead(src, start)))];
+    }
+    insert_first(src, parent, tag, write)
+}
+
+/// How a new element is laid out on a line of its own: after `newline` and `indent`, with each of
+/// its elements on a line of its own, one `step` further in.
+struct Layout<'a> {
+    newline: &'static str,
+    indent: String,
+    step: &'a str,
+}
+
+impl Layout<'_> {
+    /// Starts a line, `depth` steps further in than the new element.
+    fn line(&self, depth: usize, out: &mut String) {
+        out.push_str(self.newline);
+        out.push_str(&self.indent);
+        for _ in 0..depth {
+            out.push_str(self.step);
+        }
+    }
+}
+
+/// The layout of an element beside `node`, as `node` is laid out, when it's on a line of its own.
+fn layout_beside<'a>(src: &'a str, node: Node) -> Option<Layout<'a>> {
+    let (newline, indent) = line_lead(src, node.range().start)?;
+    Some(Layout {
+        newline,
+        indent: indent.to_string(),
+        step: indent_step(src, node, indent),
+    })
+}
+
+/// Writes a new element `depth` levels into the one being added, with its elements on lines of
+/// their own when there's a `layout`.
+fn write_new(element: &NewElement, layout: Option<&Layout>, depth: usize, out: &mut String) {
+    let name = &element.name;
+    out.push('<');
+    out.push_str(name);
+    for (attribute, value) in &element.attributes {
+        out.push_str(&format!(" {attribute}=\"{}\"", escape_attribute(value, b'"')));
+    }
+    match &element.content {
+        NewContent::Text(text) => out.push_str(&format!(">{}</{name}>", escape_text(text))),
+        NewContent::Elements(elements) if elements.is_empty() => out.push_str("/>"),
+        NewContent::Elements(elements) => {
+            out.push('>');
+            for inner in elements {
+                if let Some(layout) = layout {
+                    layout.line(depth + 1, out);
+                }
+                write_new(inner, layout, depth + 1, out);
+            }
+            if let Some(layout) = layout {
+                layout.line(depth, out);
+            }
+            out.push_str(&format!("</{name}>"));
+        }
+    }
+}
+
+/// Where an element goes to follow `node`, and what goes before it to separate it from `node`, as
+/// `node` is from what's before it. When `node` is on a line of its own, that's at the end of its
+/// line, after any comments there, which are about `node`.
+fn after_element<'a>(src: &'a str, node: Node) -> (usize, &'a str) {
+    let (start, end) = (node.range().start, node.range().end);
+    let end = match line_lead(src, start) {
+        Some(_) => line_end(src, end).unwrap_or(end),
+        None => end,
+    };
+    (end, lead(src, start))
+}
+
+/// Where the line that `pos` is on ends, before its line break, when only spaces, tabs and
+/// comments follow `pos` on it.
+fn line_end(src: &str, mut pos: usize) -> Option<usize> {
+    let b = src.as_bytes();
+    loop {
+        while pos < b.len() && matches!(b[pos], b' ' | b'\t') {
+            pos += 1;
+        }
+        if !src[pos..].starts_with("<!--") {
+            break;
+        }
+        pos += src[pos..].find("-->")? + "-->".len();
+    }
+    (pos == b.len() || matches!(b[pos], b'\r' | b'\n')).then_some(pos)
 }
 
 /// The line break and indentation before `pos`, when only spaces and tabs come before it on its
@@ -452,9 +519,7 @@ fn indent_step<'a>(src: &'a str, node: Node, indent: &'a str) -> &'a str {
         }
     });
     match outer {
-        Some(outer) if indent.len() > outer.len() && indent.starts_with(outer) => {
-            &indent[outer.len()..]
-        }
+        Some(outer) if indent.len() > outer.len() && indent.starts_with(outer) => &indent[outer.len()..],
         _ if indent.contains('\t') => "\t",
         _ => "    ",
     }
@@ -488,10 +553,7 @@ mod tests {
         let mut out = Vec::new();
         let mut pos = 0;
         for edit in edits {
-            assert!(
-                edit.start as usize >= pos,
-                "edits overlap or are out of order"
-            );
+            assert!(edit.start as usize >= pos, "edits overlap or are out of order");
             out.extend_from_slice(&units[pos..edit.start as usize]);
             out.extend(edit.text.encode_utf16());
             pos = edit.end as usize;
@@ -526,18 +588,9 @@ mod tests {
                 },
             )
         };
-        assert_eq!(
-            set(&["r", "a"], "2"),
-            "<r>\n  <!-- µ -->\n  <a>2</a>\n  <b/>\n  <c></c>\n</r>"
-        );
-        assert_eq!(
-            set(&["r", "b"], "x < y"),
-            "<r>\n  <!-- µ -->\n  <a>1</a>\n  <b>x &lt; y</b>\n  <c></c>\n</r>"
-        );
-        assert_eq!(
-            set(&["r", "c"], "3"),
-            "<r>\n  <!-- µ -->\n  <a>1</a>\n  <b/>\n  <c>3</c>\n</r>"
-        );
+        assert_eq!(set(&["r", "a"], "2"), "<r>\n  <!-- µ -->\n  <a>2</a>\n  <b/>\n  <c></c>\n</r>");
+        assert_eq!(set(&["r", "b"], "x < y"), "<r>\n  <!-- µ -->\n  <a>1</a>\n  <b>x &lt; y</b>\n  <c></c>\n</r>");
+        assert_eq!(set(&["r", "c"], "3"), "<r>\n  <!-- µ -->\n  <a>1</a>\n  <b/>\n  <c>3</c>\n</r>");
         assert!(
             apply_edit(
                 xml,
@@ -562,36 +615,16 @@ mod tests {
                 value: "12345".into(),
             },
         );
-        assert_eq!(
-            valued,
-            format!("<r {XSI}>\r\n    <pulseNo>12345</pulseNo>\r\n</r>")
-        );
-        assert_eq!(
-            edit(
-                &valued,
-                EditOp::SetNil {
-                    path: pulse.clone()
-                }
-            ),
-            xml
-        );
-        assert!(
-            apply_edit(&xml, &EditOp::SetNil { path: pulse })
-                .unwrap()
-                .is_empty()
-        );
+        assert_eq!(valued, format!("<r {XSI}>\r\n    <pulseNo>12345</pulseNo>\r\n</r>"));
+        assert_eq!(edit(&valued, EditOp::SetNil { path: pulse.clone() }), xml);
+        assert!(apply_edit(&xml, &EditOp::SetNil { path: pulse }).unwrap().is_empty());
     }
 
     #[test]
     fn declares_xsi_when_needed() {
         let xml = "<r><a>1</a></r>";
         assert_eq!(
-            edit(
-                xml,
-                EditOp::SetNil {
-                    path: path(&["r", "a"])
-                }
-            ),
+            edit(xml, EditOp::SetNil { path: path(&["r", "a"]) }),
             format!("<r><a {XSI} xsi:nil=\"true\"/></r>")
         );
     }
@@ -633,22 +666,11 @@ mod tests {
             MATRIX.replace("<row>0.0   0.0 1e+10</row>", "<row>0.0   0.0 5</row>")
         );
         // A row too short for the column is padded
-        assert_eq!(
-            set_cell(MATRIX, row(0), 4, "9"),
-            MATRIX.replace("177.7   0.0<", "177.7   0.0 0.0 9<")
-        );
-        assert_eq!(
-            set_cell("<r><m><row/></m></r>", row(0), 1, "7"),
-            "<r><m><row>0.0 7</row></m></r>"
-        );
+        assert_eq!(set_cell(MATRIX, row(0), 4, "9"), MATRIX.replace("177.7   0.0<", "177.7   0.0 0.0 9<"));
+        assert_eq!(set_cell("<r><m><row/></m></r>", row(0), 1, "7"), "<r><m><row>0.0 7</row></m></r>");
         // Content that isn't plain text is written anew
         assert_eq!(
-            set_cell(
-                "<r><m><row>1&#32;2 <!-- c --></row></m></r>",
-                row(0),
-                0,
-                "3"
-            ),
+            set_cell("<r><m><row>1&#32;2 <!-- c --></row></m></r>", row(0), 0, "3"),
             "<r><m><row>3 2</row></m></r>"
         );
     }
@@ -659,55 +681,33 @@ mod tests {
             insert_row(MATRIX, 2, "1 2 3"),
             MATRIX.replace("1e+10</row>", "1e+10</row>\n        <row>1 2 3</row>")
         );
-        assert_eq!(
-            insert_row(MATRIX, 0, "1 2 3"),
-            MATRIX.replace("<m>\n", "<m>\n        <row>1 2 3</row>\n")
-        );
+        assert_eq!(insert_row(MATRIX, 0, "1 2 3"), MATRIX.replace("<m>\n", "<m>\n        <row>1 2 3</row>\n"));
         let crlf = "<r xmlns:p=\"urn:p\">\r\n\t<m>\r\n\t\t<p:row>1</p:row>\r\n\t</m>\r\n</r>";
-        assert_eq!(
-            insert_row(crlf, 1, "2"),
-            crlf.replace("</p:row>", "</p:row>\r\n\t\t<p:row>2</p:row>")
-        );
+        assert_eq!(insert_row(crlf, 1, "2"), crlf.replace("</p:row>", "</p:row>\r\n\t\t<p:row>2</p:row>"));
     }
 
     #[test]
     fn adds_the_first_row_indented_one_step_further() {
-        assert_eq!(
-            insert_row("<r>\n    <m/>\n</r>", 0, "1"),
-            "<r>\n    <m>\n        <row>1</row>\n    </m>\n</r>"
-        );
+        assert_eq!(insert_row("<r>\n    <m/>\n</r>", 0, "1"), "<r>\n    <m>\n        <row>1</row>\n    </m>\n</r>");
         assert_eq!(
             insert_row("<r>\r\n\t<m>\r\n\t</m>\r\n</r>", 0, "1"),
             "<r>\r\n\t<m>\r\n\t\t<row>1</row>\r\n\t</m>\r\n</r>"
         );
         assert_eq!(
-            insert_row(
-                "<?xml version=\"1.0\"?>\n<r>\n  <m unit=\"1\" />\n</r>",
-                0,
-                "1"
-            ),
+            insert_row("<?xml version=\"1.0\"?>\n<r>\n  <m unit=\"1\" />\n</r>", 0, "1"),
             "<?xml version=\"1.0\"?>\n<r>\n  <m unit=\"1\">\n    <row>1</row>\n  </m>\n</r>"
         );
-        assert_eq!(
-            insert_row("<r><m/></r>", 0, "1"),
-            "<r><m><row>1</row></m></r>"
-        );
+        assert_eq!(insert_row("<r><m/></r>", 0, "1"), "<r><m><row>1</row></m></r>");
     }
 
     #[test]
     fn removes_rows_with_their_lines() {
-        let remove = |xml: &str, i| edit(xml, EditOp::RemoveRow { path: row(i) });
-        assert_eq!(
-            remove(MATRIX, 0),
-            MATRIX.replace("\n        <row>0.0 177.7   0.0</row>", "")
-        );
-        assert_eq!(
-            remove(MATRIX, 1),
-            MATRIX.replace("\n        <row>0.0   0.0 1e+10</row>", "")
-        );
+        let remove = |xml: &str, i| edit(xml, EditOp::RemoveElement { path: row(i) });
+        assert_eq!(remove(MATRIX, 0), MATRIX.replace("\n        <row>0.0 177.7   0.0</row>", ""));
+        assert_eq!(remove(MATRIX, 1), MATRIX.replace("\n        <row>0.0   0.0 1e+10</row>", ""));
         // The last row leaves the matrix empty
         assert_eq!(remove(&remove(MATRIX, 1), 0), "<r>\n    <m/>\n</r>");
-        assert!(apply_edit(MATRIX, &EditOp::RemoveRow { path: path(&["r"]) }).is_err());
+        assert!(apply_edit(MATRIX, &EditOp::RemoveElement { path: path(&["r"]) }).is_err());
     }
 
     #[test]
@@ -739,20 +739,11 @@ mod tests {
                 .map(str::to_string)
                 .collect()
         };
-        assert_eq!(
-            rows(insert(MATRIX, 3)),
-            ["0.0 177.7   0.0 0.0", "0.0   0.0 1e+10 0.0"]
-        );
-        assert_eq!(
-            rows(insert(MATRIX, 1)),
-            ["0.0 0.0 177.7   0.0", "0.0   0.0 0.0 1e+10"]
-        );
+        assert_eq!(rows(insert(MATRIX, 3)), ["0.0 177.7   0.0 0.0", "0.0   0.0 1e+10 0.0"]);
+        assert_eq!(rows(insert(MATRIX, 1)), ["0.0 0.0 177.7   0.0", "0.0   0.0 0.0 1e+10"]);
         // A short row is padded to the new column
         let short = MATRIX.replace("0.0   0.0 1e+10", "1");
-        assert_eq!(
-            rows(insert(&short, 3)),
-            ["0.0 177.7   0.0 0.0", "1 0.0 0.0 0.0"]
-        );
+        assert_eq!(rows(insert(&short, 3)), ["0.0 177.7   0.0 0.0", "1 0.0 0.0 0.0"]);
         assert_eq!(rows(remove(MATRIX, 1)), ["0.0   0.0", "0.0 1e+10"]);
         assert_eq!(rows(remove(MATRIX, 0)), ["177.7   0.0", "0.0 1e+10"]);
         assert_eq!(rows(remove(&short, 2)), ["0.0 177.7", "1"]);
@@ -778,5 +769,85 @@ mod tests {
             },
         );
         assert_eq!(renamed, format!("<r {XSI}><a unit='it&apos;s'>1.5</a></r>"));
+    }
+
+    /// A list of times, with a comment that ends the line of the time it's about.
+    const LIST: &str = "<r>\n    <times>\n        <time>1</time> <!-- start -->\n        <time>2</time>\n    </times>\n    <c>3</c>\n</r>";
+
+    fn time(i: usize) -> Path {
+        path(&["r", "times"]).child("time", i)
+    }
+
+    #[test]
+    fn removes_items_with_their_lines() {
+        let remove = |xml: &str, path: Path| edit(xml, EditOp::RemoveElement { path });
+        assert_eq!(remove(LIST, time(0)), LIST.replace("\n        <time>1</time> <!-- start -->", ""));
+        assert_eq!(remove(LIST, time(1)), LIST.replace("\n        <time>2</time>", ""));
+        // What follows it on its line moves up to where it was
+        assert_eq!(remove("<r>\n    <a>1</a> <b>2</b>\n</r>", path(&["r", "a"])), "<r>\n    <b>2</b>\n</r>");
+        assert_eq!(remove("<r><a>1</a> <a>2</a></r>", path(&["r"]).child("a", 1)), "<r><a>1</a></r>");
+        assert!(apply_edit(LIST, &EditOp::RemoveElement { path: path(&["r"]) }).is_err());
+    }
+
+    #[test]
+    fn copies_items_after_them() {
+        let copy = |xml: &str, path: Path| edit(xml, EditOp::InsertCopy { path });
+        // After the comment about it
+        assert_eq!(copy(LIST, time(0)), LIST.replace("<!-- start -->", "<!-- start -->\n        <time>1</time>"));
+        let nested = "<r>\n  <item>\n    <x>1</x>\n  </item>\n  <c/>\n</r>";
+        assert_eq!(
+            copy(nested, path(&["r", "item"])),
+            "<r>\n  <item>\n    <x>1</x>\n  </item>\n  <item>\n    <x>1</x>\n  </item>\n  <c/>\n</r>"
+        );
+        assert_eq!(copy("<r><a>1</a><b/></r>", path(&["r", "a"])), "<r><a>1</a><a>1</a><b/></r>");
+        assert!(apply_edit(LIST, &EditOp::InsertCopy { path: path(&["r"]) }).is_err());
+    }
+
+    #[test]
+    fn adds_a_first_item_where_the_schema_puts_it() {
+        let window = NewElement {
+            name: "window".into(),
+            attributes: vec![("unit".into(), "a\"b".into())],
+            content: NewContent::Elements(vec![
+                NewElement {
+                    name: "start".into(),
+                    attributes: Vec::new(),
+                    content: NewContent::Text("0.0".into()),
+                },
+                NewElement {
+                    name: "flag".into(),
+                    attributes: Vec::new(),
+                    content: NewContent::Elements(Vec::new()),
+                },
+            ]),
+        };
+        let insert = |xml: &str, parent: &[&str], after: &[&str]| {
+            edit(
+                xml,
+                EditOp::InsertElement {
+                    path: path(parent),
+                    after: after.iter().map(|name| name.to_string()).collect(),
+                    element: window.clone(),
+                },
+            )
+        };
+        let written = "<window unit=\"a&quot;b\">\n        <start>0.0</start>\n        <flag/>\n    </window>";
+        // After the last of the elements before it
+        assert_eq!(
+            insert(LIST, &["r"], &["a", "times"]),
+            LIST.replace("</times>", &format!("</times>\n    {written}"))
+        );
+        // First, when there are none of those
+        assert_eq!(insert(LIST, &["r"], &["a"]), LIST.replace("<times>", &format!("{written}\n    <times>")));
+        // In an empty element, a step further in than it
+        assert_eq!(
+            insert("<r>\r\n\t<p/>\r\n</r>", &["r", "p"], &[]),
+            "<r>\r\n\t<p>\r\n\t\t<window unit=\"a&quot;b\">\r\n\t\t\t<start>0.0</start>\r\n\t\t\t<flag/>\r\n\t\t</window>\r\n\t</p>\r\n</r>"
+        );
+        // On the line the others are on
+        assert_eq!(
+            insert("<r><a/></r>", &["r"], &["a"]),
+            "<r><a/><window unit=\"a&quot;b\"><start>0.0</start><flag/></window></r>"
+        );
     }
 }

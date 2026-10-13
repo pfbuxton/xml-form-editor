@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<overall_code_settings xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="overall_code_settings.xsd">
+    <pulse_number>12348</pulse_number>
+    <run_name>example</run_name>
+    <write_results>false</write_results>
+    <numerics href="numerics.xml"/>
+    <time_slices href="time_slices.xml"/>
+</overall_code_settings>

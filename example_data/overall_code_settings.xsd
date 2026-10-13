@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+    Schema for overall_code_settings.xml: the settings of a run, and links to the files that hold the rest of them.
+
+    Each part of the settings is in a file of its own, which overall_code_settings.xml links to with an href
+    attribute, such as <numerics href="numerics.xml"/>. Each of those files names its own schema.
+-->
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" elementFormDefault="unqualified">
+
+    <!-- ================================= Complex types ================================= -->
+
+    <xs:complexType name="SettingsFile">
+        <xs:annotation><xs:documentation>A link to the file that holds a part of the settings</xs:documentation></xs:annotation>
+        <xs:attribute name="href" type="xs:anyURI" use="required">
+            <xs:annotation><xs:documentation>The file, relative to this one</xs:documentation></xs:annotation>
+        </xs:attribute>
+    </xs:complexType>
+
+    <!-- ================================= The settings file ================================= -->
+
+    <xs:element name="overall_code_settings">
+        <xs:annotation><xs:documentation>The settings of a run</xs:documentation></xs:annotation>
+        <xs:complexType>
+            <xs:sequence>
+                <xs:element name="pulse_number" type="xs:positiveInteger">
+                    <xs:annotation><xs:documentation>The pulse to reconstruct</xs:documentation></xs:annotation>
+                </xs:element>
+                <xs:element name="run_name" type="xs:token">
+                    <xs:annotation><xs:documentation>A name for the run, saved with its results</xs:documentation></xs:annotation>
+                </xs:element>
+                <xs:element name="write_results" type="xs:boolean">
+                    <xs:annotation><xs:documentation>Whether to write the results to the database, or only to the output directory</xs:documentation></xs:annotation>
+                </xs:element>
+                <xs:element name="numerics" type="SettingsFile">
+                    <xs:annotation><xs:documentation>The settings of the Grad-Shafranov solve</xs:documentation></xs:annotation>
+                </xs:element>
+                <xs:element name="time_slices" type="SettingsFile">
+                    <xs:annotation><xs:documentation>The times to reconstruct</xs:documentation></xs:annotation>
+                </xs:element>
+            </xs:sequence>
+        </xs:complexType>
+    </xs:element>
+</xs:schema>

@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<time_slices xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="time_slices.xsd">
+    <method>times</method>
+    <times>
+        <time>0.050</time>
+        <time>0.100</time>
+        <time>0.150</time>
+        <time>0.200</time>
+        <time>0.3</time>
+        <time>0.45</time>
+    </times>
+    <regular>
+        <time_start>0.0</time_start>
+        <time_end>0.3</time_end>
+        <time_step>5.0e-3</time_step>
+    </regular>
+    <averaging_window>1.0e-3</averaging_window>
+    <initial_guess>previous</initial_guess>
+    <stop_on_failure>false</stop_on_failure>
+    <override>
+        <time_start>0.0</time_start>
+        <time_end>0.02</time_end>
+        <n_iter_max>500</n_iter_max>
+        <grad_shafranov_deviation_tolerance>1.0e-4</grad_shafranov_deviation_tolerance>
+    </override>
+</time_slices>

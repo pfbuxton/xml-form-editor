@@ -1,0 +1,180 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+    Schema for time_slices.xml: the times at which the equilibrium is reconstructed, and the settings that change between them.
+
+    See overall_code_settings.xsd for how the settings files fit together.
+-->
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" elementFormDefault="unqualified">
+
+    <!-- ===================================== Enums ===================================== -->
+
+    <xs:simpleType name="TimeSliceMethod">
+        <xs:annotation><xs:documentation>How the times to reconstruct are chosen</xs:documentation></xs:annotation>
+        <xs:restriction base="xs:string">
+            <xs:enumeration value="times">
+                <xs:annotation><xs:documentation>The times listed in times</xs:documentation></xs:annotation>
+            </xs:enumeration>
+            <xs:enumeration value="regular">
+                <xs:annotation><xs:documentation>Times a fixed step apart, as set in regular</xs:documentation></xs:annotation>
+            </xs:enumeration>
+        </xs:restriction>
+    </xs:simpleType>
+
+    <xs:simpleType name="InitialGuess">
+        <xs:annotation><xs:documentation>Where the nonlinear solve of each time-slice starts from</xs:documentation></xs:annotation>
+        <xs:restriction base="xs:string">
+            <xs:enumeration value="previous">
+                <xs:annotation><xs:documentation>The equilibrium of the time-slice before, which usually converges in fewer iterations</xs:documentation></xs:annotation>
+            </xs:enumeration>
+            <xs:enumeration value="fixed">
+                <xs:annotation><xs:documentation>The same initial guess for every time-slice: slower, but a time-slice that fails doesn't affect the next</xs:documentation></xs:annotation>
+            </xs:enumeration>
+        </xs:restriction>
+    </xs:simpleType>
+
+    <!-- ================================= Other simple types ================================= -->
+
+    <xs:simpleType name="PositiveDouble">
+        <xs:annotation><xs:documentation>A number greater than 0</xs:documentation></xs:annotation>
+        <xs:restriction base="xs:double">
+            <xs:minExclusive value="0.0"/>
+        </xs:restriction>
+    </xs:simpleType>
+
+    <xs:simpleType name="NonNegativeDouble">
+        <xs:annotation><xs:documentation>A number, 0 or more</xs:documentation></xs:annotation>
+        <xs:restriction base="xs:double">
+            <xs:minInclusive value="0.0"/>
+        </xs:restriction>
+    </xs:simpleType>
+
+    <!-- ================================= The settings file ================================= -->
+
+    <xs:element name="time_slices">
+        <xs:annotation><xs:documentation>The times at which the equilibrium is reconstructed, and the settings that change between them</xs:documentation></xs:annotation>
+        <xs:complexType>
+            <xs:sequence>
+                <xs:element name="method" type="TimeSliceMethod">
+                    <xs:annotation><xs:documentation>How the times are chosen. Their settings are in the element of the same name, below</xs:documentation></xs:annotation>
+                </xs:element>
+                <xs:element name="times">
+                    <xs:annotation><xs:documentation>The times to reconstruct, listed one by one</xs:documentation></xs:annotation>
+                    <xs:complexType>
+                        <xs:sequence>
+                            <xs:element name="time" type="xs:double" maxOccurs="unbounded">
+                                <xs:annotation>
+                                    <xs:documentation>A time to reconstruct. The times are reconstructed in order, whatever order they're listed in</xs:documentation>
+                                    <xs:appinfo>
+                                        <units>s</units>
+                                    </xs:appinfo>
+                                </xs:annotation>
+                            </xs:element>
+                        </xs:sequence>
+                    </xs:complexType>
+                </xs:element>
+                <xs:element name="regular">
+                    <xs:annotation><xs:documentation>Times a fixed step apart, from time_start to time_end</xs:documentation></xs:annotation>
+                    <xs:complexType>
+                        <xs:sequence>
+                            <xs:element name="time_start" type="xs:double">
+                                <xs:annotation>
+                                    <xs:documentation>The first time to reconstruct</xs:documentation>
+                                    <xs:appinfo>
+                                        <units>s</units>
+                                    </xs:appinfo>
+                                </xs:annotation>
+                            </xs:element>
+                            <xs:element name="time_end" type="xs:double">
+                                <xs:annotation>
+                                    <xs:documentation>The last time-slice is at or before this time</xs:documentation>
+                                    <xs:appinfo>
+                                        <units>s</units>
+                                    </xs:appinfo>
+                                </xs:annotation>
+                            </xs:element>
+                            <xs:element name="time_step" type="PositiveDouble">
+                                <xs:annotation>
+                                    <xs:documentation>The time between one time-slice and the next</xs:documentation>
+                                    <xs:appinfo>
+                                        <units>s</units>
+                                    </xs:appinfo>
+                                </xs:annotation>
+                            </xs:element>
+                        </xs:sequence>
+                    </xs:complexType>
+                </xs:element>
+                <xs:element name="averaging_window" type="NonNegativeDouble">
+                    <xs:annotation>
+                        <xs:documentation>The measurements are averaged over a window this long, centred on each time-slice; 0 takes the nearest sample</xs:documentation>
+                        <xs:appinfo>
+                            <units>s</units>
+                        </xs:appinfo>
+                    </xs:annotation>
+                </xs:element>
+                <xs:element name="initial_guess" type="InitialGuess">
+                    <xs:annotation><xs:documentation>Where the nonlinear solve of each time-slice starts from</xs:documentation></xs:annotation>
+                </xs:element>
+                <xs:element name="stop_on_failure" type="xs:boolean">
+                    <xs:annotation><xs:documentation>Whether to stop at the first time-slice that fails to converge, rather than go on to the next</xs:documentation></xs:annotation>
+                </xs:element>
+                <xs:element name="override" minOccurs="0" maxOccurs="unbounded">
+                    <xs:annotation><xs:documentation>Numerics settings that differ in a window of time, such as during the current ramp-up. Where windows overlap, the last one listed applies</xs:documentation></xs:annotation>
+                    <xs:complexType>
+                        <xs:sequence>
+                            <xs:element name="time_start" type="xs:double">
+                                <xs:annotation>
+                                    <xs:documentation>The start of the window</xs:documentation>
+                                    <xs:appinfo>
+                                        <units>s</units>
+                                    </xs:appinfo>
+                                </xs:annotation>
+                            </xs:element>
+                            <xs:element name="time_end" type="xs:double">
+                                <xs:annotation>
+                                    <xs:documentation>The end of the window</xs:documentation>
+                                    <xs:appinfo>
+                                        <units>s</units>
+                                    </xs:appinfo>
+                                </xs:annotation>
+                            </xs:element>
+                            <xs:element name="n_iter_max" type="xs:nonNegativeInteger">
+                                <xs:annotation><xs:documentation>Replaces n_iter_max of numerics.xml in the window</xs:documentation></xs:annotation>
+                            </xs:element>
+                            <xs:element name="grad_shafranov_deviation_tolerance" type="PositiveDouble">
+                                <xs:annotation>
+                                    <xs:documentation>Replaces grad_shafranov_deviation_tolerance of numerics.xml in the window</xs:documentation>
+                                    <xs:appinfo>
+                                        <units>1</units>
+                                    </xs:appinfo>
+                                </xs:annotation>
+                            </xs:element>
+                        </xs:sequence>
+                    </xs:complexType>
+                </xs:element>
+                <xs:element name="exclude" minOccurs="0" maxOccurs="unbounded">
+                    <xs:annotation><xs:documentation>A window of time in which no time-slices are reconstructed, such as a disruption</xs:documentation></xs:annotation>
+                    <xs:complexType>
+                        <xs:sequence>
+                            <xs:element name="time_start" type="xs:double">
+                                <xs:annotation>
+                                    <xs:documentation>The start of the window</xs:documentation>
+                                    <xs:appinfo>
+                                        <units>s</units>
+                                    </xs:appinfo>
+                                </xs:annotation>
+                            </xs:element>
+                            <xs:element name="time_end" type="xs:double">
+                                <xs:annotation>
+                                    <xs:documentation>The end of the window</xs:documentation>
+                                    <xs:appinfo>
+                                        <units>s</units>
+                                    </xs:appinfo>
+                                </xs:annotation>
+                            </xs:element>
+                        </xs:sequence>
+                    </xs:complexType>
+                </xs:element>
+            </xs:sequence>
+        </xs:complexType>
+    </xs:element>
+</xs:schema>

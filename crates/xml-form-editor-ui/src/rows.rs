@@ -56,7 +56,6 @@ pub(crate) struct SectionRow {
     pub unused: bool,
     pub expanded: bool,
     pub empty: bool,
-    pub offset: u32,
     /// The file the section shows, when it links to one
     pub linked_file: Option<LinkedFile>,
     pub remove: Remove,
@@ -83,7 +82,6 @@ pub(crate) struct ValueRow {
     pub variant: Variant,
     pub unused: bool,
     pub selector: bool,
-    pub offset: u32,
     pub units: Option<String>,
     pub change: Change,
     pub remove: Remove,
@@ -97,7 +95,6 @@ pub(crate) struct AttributeRow {
     pub copy_path: String,
     pub attribute: AttributeField,
     pub unused: bool,
-    pub offset: u32,
     pub change: Change,
 }
 
@@ -113,7 +110,6 @@ pub(crate) struct MatrixRow {
     pub notes: Vec<Note>,
     pub variant: Variant,
     pub unused: bool,
-    pub offset: u32,
     pub units: Option<String>,
     pub matrix: Matrix,
     pub lines: Vec<MatrixLine>,
@@ -335,7 +331,6 @@ fn walk(node: &FormNode, depth: usize, above: Above, filter: &str, folding: &Fol
             notes: node.notes.clone(),
             variant: node.variant.clone(),
             unused,
-            offset: node.offset,
             units: node.units.clone(),
             matrix: matrix.clone(),
             lines: matrix_lines(children, folding.versions.get(above.document)),
@@ -371,7 +366,6 @@ fn walk(node: &FormNode, depth: usize, above: Above, filter: &str, folding: &Fol
                 unused,
                 expanded,
                 empty: children.is_empty() && node.attributes.is_empty() && linked.is_none(),
-                offset: node.offset,
                 linked_file: linked.zip(node.link.as_ref()).map(|(linked, href)| LinkedFile {
                     href: href.clone(),
                     document: linked.document.as_str().into(),
@@ -396,7 +390,6 @@ fn walk(node: &FormNode, depth: usize, above: Above, filter: &str, folding: &Fol
                 variant: node.variant.clone(),
                 unused,
                 selector: node.selector,
-                offset: node.offset,
                 units: node.units.clone(),
                 change: Change::of(&node.path.to_string(), field.as_written(), versions),
                 remove,
@@ -514,7 +507,6 @@ fn push_attributes(node: &FormNode, depth: usize, above: Above, filter: &str, fo
             copy_path: join(above.copy_path, &format!("@{}", attribute.name)),
             attribute: attribute.clone(),
             unused: above.unused,
-            offset: node.offset,
             change: Change::of(&key, attribute.field.as_written(), versions),
         })
     }));

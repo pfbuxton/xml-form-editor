@@ -11,7 +11,6 @@ use roxmltree::Node;
 
 use crate::schema::{AttributeDecl, ChildDecl, ElementContent, ElementDecl, MAX_DEPTH, Schema};
 use crate::simple::SimpleInfo;
-use crate::text::Utf16Offsets;
 use crate::xml::{Path, XSI_NS, XmlError, attribute_namespace, is_nil, local_name, parse, scan_start_tag, schema_location_of};
 
 /// A document as the form shows it.
@@ -39,8 +38,6 @@ pub struct FormNode {
     pub variant: Variant,
     /// Whether this is an enumeration that chooses which of its siblings is used (see [`Variant`])
     pub selector: bool,
-    /// Where the element starts, in UTF-16 units, for showing it in the text editor
-    pub offset: u32,
     /// The value's units, from the schema's `xs:appinfo`
     pub units: Option<String>,
     /// The XML file a section links to, as its `href` attribute gives it
@@ -380,11 +377,7 @@ pub fn values(xml: &str) -> Result<HashMap<String, Option<String>>, XmlError> {
 /// Builds the form for a document, using its schema when there is one.
 pub fn build_form(xml: &str, schema: Option<&Schema>) -> Result<Form, XmlError> {
     let doc = parse(xml)?;
-    let builder = Builder {
-        src: xml,
-        schema,
-        offsets: Utf16Offsets::new(xml),
-    };
+    let builder = Builder { src: xml, schema };
     let root = doc.root_element();
     let name = root.tag_name().name();
     let path = Path::root(name);
@@ -408,7 +401,6 @@ pub fn build_form(xml: &str, schema: Option<&Schema>) -> Result<Form, XmlError> 
 struct Builder<'a> {
     src: &'a str,
     schema: Option<&'a Schema>,
-    offsets: Utf16Offsets,
 }
 
 impl Builder<'_> {
@@ -425,7 +417,6 @@ impl Builder<'_> {
             notes: Vec::new(),
             variant: Variant::Plain,
             selector: false,
-            offset: self.offsets.of(start),
             units: None,
             link: None,
             linked: None,

@@ -92,14 +92,13 @@ fn section_view(row: SectionRow, ctx: Ctx) -> impl IntoView {
         unused,
         expanded,
         empty,
-        offset,
         linked_file,
         remove,
     } = row;
     let problem = notes.iter().any(|n| n.severity == Severity::Error);
     let Place { document, key, .. } = place;
     let label = label(name, index);
-    let remove = remove.map(|remove| remove_button(ctx, document.clone(), &label, remove));
+    let remove = remove.map(|remove| remove_button(ctx, document, &label, remove));
     let toggle = {
         let key = key.clone();
         move |_: web_sys::MouseEvent| {
@@ -109,9 +108,9 @@ fn section_view(row: SectionRow, ctx: Ctx) -> impl IntoView {
         }
     };
     let toggle_title = if expanded { "Collapse" } else { "Expand" };
-    // The name folds the section, as the twisty does. One with nothing to fold shows in the XML.
+    // The name folds the section, as the twisty does
     let name = if empty {
-        view! { <span class="name" title="Show in the XML" on:click=move |_| ctx.reveal(&document, offset)>{label}</span> }.into_any()
+        view! { <span class="name">{label}</span> }.into_any()
     } else {
         view! { <span class="name toggle" title=toggle_title on:click=toggle.clone()>{label}</span> }.into_any()
     };
@@ -165,7 +164,6 @@ fn value_view(row: ValueRow, ctx: Ctx) -> impl IntoView {
         variant,
         unused,
         selector,
-        offset,
         units,
         change,
         remove,
@@ -173,13 +171,13 @@ fn value_view(row: ValueRow, ctx: Ctx) -> impl IntoView {
     let problem = field.error.is_some() || notes.iter().any(|n| n.severity == Severity::Error);
     let summary = field.ty.as_ref().map(|ty| ty.summary());
     let type_doc = field.ty.as_ref().and_then(|ty| ty.doc.clone());
-    let (key, document) = (place.key.clone(), place.document.clone());
+    let key = place.key.clone();
     let label = label(name, index);
-    let remove = remove.map(|remove| remove_button(ctx, document.clone(), &label, remove));
+    let remove = remove.map(|remove| remove_button(ctx, place.document.clone(), &label, remove));
     view! {
         <div class=row_class("value", depth, unused, problem) data-path=key>
             <div class="title">
-                <span class="name" title="Show in the XML" on:click=move |_| ctx.reveal(&document, offset)>{label}</span>
+                <span class="name">{label}</span>
                 {summary.map(|summary| view! { <span class="type" title=type_doc>{summary}</span> })}
                 {variant_badge(&variant)}
                 {copy_path.map(|path| copy_button(ctx, path))}
@@ -200,7 +198,6 @@ fn attribute_view(row: AttributeRow, ctx: Ctx) -> impl IntoView {
         copy_path,
         attribute,
         unused,
-        offset,
         change,
     } = row;
     let AttributeField {
@@ -213,12 +210,11 @@ fn attribute_view(row: AttributeRow, ctx: Ctx) -> impl IntoView {
     let problem = field.error.is_some();
     let summary = field.ty.as_ref().map(|ty| ty.summary());
     let key = format!("{}/@{name}", place.key);
-    let document = place.document.clone();
     let label = format!("@{name}");
     view! {
         <div class=row_class("value attribute", depth, unused, problem) data-path=key>
             <div class="title">
-                <span class="name" title="Show in the XML" on:click=move |_| ctx.reveal(&document, offset)>{label}</span>
+                <span class="name">{label}</span>
                 {summary.map(|summary| view! { <span class="type">{summary}</span> })}
                 {copy_button(ctx, copy_path)}
             </div>

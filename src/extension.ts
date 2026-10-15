@@ -103,7 +103,6 @@ type FromWebview =
   | { type: "requestSchema"; document: string; location: string }
   | { type: "openLink"; document: string; href: string }
   | { type: "edit"; document: string; id: number; version: number; edits: TextEdit[] }
-  | { type: "reveal"; document: string; offset: number }
   | { type: "openForm"; document: string }
   | { type: "openSource" }
   | { type: "openSchema"; document: string }
@@ -315,9 +314,6 @@ class FormSession implements vscode.Disposable {
       case "edit":
         await this.applyEdit(message.document, message.id, message.version, message.edits);
         break;
-      case "reveal":
-        await this.reveal(message.document, message.offset);
-        break;
       case "openForm":
         await this.openInForm(message.document);
         break;
@@ -432,20 +428,6 @@ class FormSession implements vscode.Disposable {
       viewColumn: visible?.viewColumn ?? vscode.ViewColumn.Beside,
       preview: false,
     });
-  }
-
-  private async reveal(file: string, offset: number): Promise<void> {
-    const shown = this.files.get(file);
-    if (!shown) {
-      return;
-    }
-    // The text shown has the changes the form holds, which the offset counts
-    await release(shown.uri);
-    const document = await vscode.workspace.openTextDocument(shown.uri);
-    const editor = await this.showText(document);
-    const position = document.positionAt(offset);
-    editor.selection = new vscode.Selection(position, position);
-    editor.revealRange(new vscode.Range(position, position), vscode.TextEditorRevealType.InCenterIfOutsideViewport);
   }
 
   /** Opens a file the form shows in a form of its own: the one already showing it, or a new one beside. */

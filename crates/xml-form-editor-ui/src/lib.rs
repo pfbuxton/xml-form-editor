@@ -473,13 +473,6 @@ impl Ctx {
         self.send_next();
     }
 
-    pub(crate) fn reveal(&self, document: &str, offset: u32) {
-        bridge::post(&Out::Reveal {
-            document: document.to_string(),
-            offset,
-        });
-    }
-
     pub(crate) fn open_form(&self, document: &str) {
         bridge::post(&Out::OpenForm {
             document: document.to_string(),

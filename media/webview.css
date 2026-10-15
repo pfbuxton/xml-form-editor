@@ -298,17 +298,12 @@ a:hover {
 
 .name {
   font-weight: 600;
-  cursor: pointer;
   overflow-wrap: anywhere;
 }
 
-.name:hover {
-  text-decoration: underline;
-}
-
-/* A section's name folds it, as its twisty does, rather than following a link */
-.name.toggle:hover {
-  text-decoration: none;
+/* A section's name folds it, as its twisty does */
+.name.toggle {
+  cursor: pointer;
 }
 
 .section .name {

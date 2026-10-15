@@ -192,7 +192,6 @@ pub(crate) fn matrix_view(row: MatrixRow, ctx: Ctx) -> impl IntoView {
     let empty = Memo::new(move |_| grid.shape.with(|(rows, _)| *rows == 0));
     let problems = Memo::new(move |_| matrix.with(value_problems));
     let problem = move || !problems.with(Vec::is_empty) || matrix.with(|m| m.notes.iter().any(|n| n.severity == Severity::Error));
-    let reveal = move |_| matrix.with_untracked(|m| ctx.reveal(&m.place.document, m.offset));
     let label = label(name, index);
     // When the matrix is an item of a list
     let remove = {
@@ -234,7 +233,7 @@ pub(crate) fn matrix_view(row: MatrixRow, ctx: Ctx) -> impl IntoView {
             data-path=place.key.clone()
         >
             <div class="title">
-                <span class="name" title="Show in the XML" on:click=reveal>{label}</span>
+                <span class="name">{label}</span>
                 <span class="type" title=move || matrix.with(type_title)>{move || matrix.with(type_summary)}</span>
                 {move || {
                     let (text, title) = shape();

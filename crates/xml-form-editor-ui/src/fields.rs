@@ -102,11 +102,18 @@ fn section_view(row: SectionRow, ctx: Ctx) -> impl IntoView {
     let remove = remove.map(|remove| remove_button(ctx, document.clone(), &label, remove));
     let toggle = {
         let key = key.clone();
-        move |_| {
+        move |_: web_sys::MouseEvent| {
             ctx.expanded.update(|sections| {
                 sections.insert(key.clone(), !expanded);
             })
         }
+    };
+    let toggle_title = if expanded { "Collapse" } else { "Expand" };
+    // The name folds the section, as the twisty does. One with nothing to fold shows in the XML.
+    let name = if empty {
+        view! { <span class="name" title="Show in the XML" on:click=move |_| ctx.reveal(&document, offset)>{label}</span> }.into_any()
+    } else {
+        view! { <span class="name toggle" title=toggle_title on:click=toggle.clone()>{label}</span> }.into_any()
     };
     view! {
         <div class=row_class("section", depth, unused, problem) data-path=key>
@@ -114,7 +121,7 @@ fn section_view(row: SectionRow, ctx: Ctx) -> impl IntoView {
                 {(!empty).then(|| view! {
                     <button
                         class=if expanded { "twisty open" } else { "twisty" }
-                        title=if expanded { "Collapse" } else { "Expand" }
+                        title=toggle_title
                         on:click=toggle
                     >
                         <svg class="chevron" viewBox="0 0 16 16" aria-hidden="true">
@@ -122,7 +129,7 @@ fn section_view(row: SectionRow, ctx: Ctx) -> impl IntoView {
                         </svg>
                     </button>
                 })}
-                <span class="name" title="Show in the XML" on:click=move |_| ctx.reveal(&document, offset)>{label}</span>
+                {name}
                 {linked_file.map(|file| file_badge(ctx, file))}
                 {variant_badge(&variant)}
                 {copy_path.map(|path| copy_button(ctx, path))}
@@ -135,11 +142,11 @@ fn section_view(row: SectionRow, ctx: Ctx) -> impl IntoView {
     }
 }
 
-/// The name of the file a section shows, which opens it.
+/// The name of the file a section shows, which opens it in a form of its own.
 fn file_badge(ctx: Ctx, file: LinkedFile) -> impl IntoView {
-    let LinkedFile { href, document, offset } = file;
+    let LinkedFile { href, document } = file;
     view! {
-        <span class="file" title="The file these settings are in. Click to show it." on:click=move |_| ctx.reveal(&document, offset)>
+        <span class="file" title="The file these settings are in. Click to open it in the form editor." on:click=move |_| ctx.open_form(&document)>
             {href}
         </span>
     }

@@ -104,6 +104,7 @@ type FromWebview =
   | { type: "openLink"; document: string; href: string }
   | { type: "edit"; document: string; id: number; version: number; edits: TextEdit[] }
   | { type: "reveal"; document: string; offset: number }
+  | { type: "openForm"; document: string }
   | { type: "openSource" }
   | { type: "openSchema"; document: string }
   | { type: "save" }
@@ -317,6 +318,9 @@ class FormSession implements vscode.Disposable {
       case "reveal":
         await this.reveal(message.document, message.offset);
         break;
+      case "openForm":
+        await this.openInForm(message.document);
+        break;
       case "openSource":
         await this.showText(this.document);
         break;
@@ -442,6 +446,21 @@ class FormSession implements vscode.Disposable {
     const position = document.positionAt(offset);
     editor.selection = new vscode.Selection(position, position);
     editor.revealRange(new vscode.Range(position, position), vscode.TextEditorRevealType.InCenterIfOutsideViewport);
+  }
+
+  /** Opens a file the form shows in a form of its own: the one already showing it, or a new one beside. */
+  private async openInForm(file: string): Promise<void> {
+    const shown = this.files.get(file);
+    if (!shown) {
+      return;
+    }
+    const group = vscode.window.tabGroups.all.find((g) =>
+      g.tabs.some(
+        (tab) => tab.input instanceof vscode.TabInputCustom && tab.input.viewType === VIEW_TYPE && sameUri(tab.input.uri, shown.uri),
+      ),
+    );
+    // Opening the tab moves the changes the forms hold for the file into its document
+    await vscode.commands.executeCommand("vscode.openWith", shown.uri, VIEW_TYPE, group?.viewColumn ?? vscode.ViewColumn.Beside);
   }
 
   private async loadSchema(file: string, location: string): Promise<void> {

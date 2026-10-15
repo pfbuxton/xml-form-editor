@@ -480,6 +480,12 @@ impl Ctx {
         });
     }
 
+    pub(crate) fn open_form(&self, document: &str) {
+        bridge::post(&Out::OpenForm {
+            document: document.to_string(),
+        });
+    }
+
     pub(crate) fn copy(&self, text: String) {
         bridge::post(&Out::Copy { text });
     }

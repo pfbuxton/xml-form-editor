@@ -42,6 +42,8 @@ pub(crate) enum Out {
     },
     /// Show this offset of a document in the text editor
     Reveal { document: String, offset: u32 },
+    /// Open a document in a form of its own
+    OpenForm { document: String },
     /// Open the document the form was opened on in the text editor
     OpenSource,
     /// Open a document's schema in the text editor

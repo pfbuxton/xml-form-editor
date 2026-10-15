@@ -27,12 +27,12 @@ The form is built from the schema, which the file names in its root element with
 - Sections that an enumeration such as `method` doesn't choose are dimmed and collapsed.
 - Filter the settings, and copy the path of any setting.
 - Settings split across files: when an element links to another XML file with `href`, the form
-  shows that file's settings in its place, so you can search and edit them all from one form. Save
-  saves every file you changed. Until then, the form holds the changes to a linked file itself:
-  VS Code opens a tab for every file with unsaved changes, so it would otherwise open one for each
-  linked file you change. Open the file, and its tab shows them as unsaved changes. The changes the
-  form holds are backed up, and if VS Code closes before you save, the form has them again when it
-  next shows the file.
+  shows that file's settings in its place, so you can search and edit them all from one form. Click
+  the file's name beside the section to open it in a form of its own. Save saves every file you
+  changed. Until then, the form holds the changes to a linked file itself: VS Code opens a tab for
+  every file with unsaved changes, so it would otherwise open one for each linked file you change.
+  Open the file, and its tab shows them as unsaved changes. The changes the form holds are backed
+  up, and if VS Code closes before you save, the form has them again when it next shows the file.
 
 Each change edits only the text it needs to, so formatting, comments and Undo keep working.
 

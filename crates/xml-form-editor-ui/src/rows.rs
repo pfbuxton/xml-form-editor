@@ -68,8 +68,6 @@ pub(crate) struct LinkedFile {
     /// The file as the link gives it
     pub href: String,
     pub document: Arc<str>,
-    /// Where its root element starts
-    pub offset: u32,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -377,7 +375,6 @@ fn walk(node: &FormNode, depth: usize, above: Above, filter: &str, folding: &Fol
                 linked_file: linked.zip(node.link.as_ref()).map(|(linked, href)| LinkedFile {
                     href: href.clone(),
                     document: linked.document.as_str().into(),
-                    offset: linked.root.offset,
                 }),
                 remove,
             }));

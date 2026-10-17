@@ -2,8 +2,9 @@
 //! from 1 as a spreadsheet numbers them, and buttons that add and remove rows and columns.
 //!
 //! The grid stays in place as the matrix changes (see [`Row::key`]) and rebuilds only the cells
-//! whose values change, so that the cell being edited keeps its focus. Enter and the arrow keys
-//! move between the cells as in a spreadsheet, and Tab moves along the row.
+//! whose values change, so that the cell being edited keeps its focus. A value typed in a cell is
+//! written as typing pauses. Enter and the arrow keys move between the cells as in a spreadsheet,
+//! and Tab moves along the row.
 
 use std::hash::{DefaultHasher, Hash, Hasher};
 
@@ -13,7 +14,7 @@ use wasm_bindgen::JsCast;
 use web_sys::HtmlInputElement;
 use xml_form_editor_core::{EditOp, Matrix, Severity};
 
-use crate::fields::{Mark, copy_button, doc_text, label, notes_view, remove_button, row_class, units_label, variant_badge};
+use crate::fields::{Mark, Pause, Typing, copy_button, doc_text, focus_lost, label, left, notes_view, remove_button, row_class, units_label, variant_badge};
 use crate::rows::{Change, MatrixRow, Row};
 use crate::{Ctx, FOCUS_WAIT};
 
@@ -391,13 +392,9 @@ fn cells(grid: Grid, row: usize) -> Vec<Cell> {
     })
 }
 
-/// Whether the page's focus is lost, as when the element holding it goes.
-fn focus_lost() -> bool {
-    document().active_element().is_none_or(|element| element.tag_name() == "BODY")
-}
-
-/// A cell: an input for its value. Only valid values are written; one that isn't stays in the cell,
-/// with the reason below the grid, until it's fixed or Escape restores the value in the file.
+/// A cell: an input for its value, written as typing pauses. Only valid values are written; one
+/// that isn't stays in the cell, with the reason below the grid, until it's fixed or Escape restores
+/// the value in the file.
 fn cell_view(grid: Grid, cell: Cell) -> AnyView {
     let Cell {
         row,
@@ -412,17 +409,8 @@ fn cell_view(grid: Grid, cell: Cell) -> AnyView {
     // Why the value typed isn't valid: the file value's error until something is typed
     let invalid = RwSignal::new(error);
     let input = NodeRef::<html::Input>::new();
-
-    // A cell rebuilt while it had the focus takes it back, as does one an edit made to be focused
-    let wanted = grid.wanted.with_value(|w| *w == Some((row, column)));
-    if wanted || grid.active.get_untracked() == Some((row, column)) {
-        request_animation_frame(move || {
-            let wanted = grid.wanted.try_update_value(|w| w.take_if(|w| *w == (row, column)).is_some()).unwrap_or(false);
-            if wanted || (grid.active.get_untracked() == Some((row, column)) && focus_lost()) {
-                grid.focus(row, column);
-            }
-        });
-    }
+    let key = StoredValue::new(grid.matrix.with_untracked(|m| format!("{}#{row}:{column}", m.place.key)));
+    let pause = Pause::new();
 
     let unchanged = move |raw: &str| {
         let raw = raw.trim();
@@ -465,6 +453,28 @@ fn cell_view(grid: Grid, cell: Cell) -> AnyView {
             }
         }
     };
+    let on_input = move |raw: &str| invalid.set(if unchanged(raw) { file_error.get_value() } else { check(raw).err() });
+
+    // A cell rebuilt while it had the focus takes it back, with what was typed in it, as does one an
+    // edit made to be focused
+    let wanted = grid.wanted.with_value(|w| *w == Some((row, column)));
+    if wanted || grid.active.get_untracked() == Some((row, column)) {
+        request_animation_frame(move || {
+            let wanted = grid.wanted.try_update_value(|w| w.take_if(|w| *w == (row, column)).is_some()).unwrap_or(false);
+            let rebuilt = !wanted && grid.active.get_untracked() == Some((row, column)) && focus_lost();
+            if wanted || rebuilt {
+                grid.focus(row, column);
+            }
+            if !rebuilt || input.is_disposed() {
+                return;
+            }
+            let typing = key.with_value(|key| grid.ctx.typed(key));
+            if let Some(ahead) = typing.zip(input.get_untracked()).and_then(|(typing, element)| typing.restore(&element)) {
+                on_input(&ahead);
+                pause.then(move || commit(ahead));
+            }
+        });
+    }
 
     let on_keydown = move |ev: web_sys::KeyboardEvent| {
         let Some(element) = input.get_untracked() else {
@@ -482,6 +492,8 @@ fn cell_view(grid: Grid, cell: Cell) -> AnyView {
             "ArrowLeft" if all || (start == Some(0) && end == Some(0)) => column.checked_sub(1).map(|c| (row, c)),
             "ArrowRight" if all || (start == Some(length) && end == Some(length)) => Some((row, column + 1)),
             "Escape" => {
+                pause.cancel();
+                key.with_value(|key| grid.ctx.stop_typing(key));
                 element.set_value(&current.get_value());
                 element.select();
                 invalid.set(file_error.get_value());
@@ -528,10 +540,18 @@ fn cell_view(grid: Grid, cell: Cell) -> AnyView {
                 style=width
                 on:focus=move |_| grid.active.set(Some((row, column)))
                 on:input=move |ev| {
-                    let raw = event_target_value(&ev);
-                    invalid.set(if unchanged(&raw) { file_error.get_value() } else { check(&raw).err() });
+                    let element = event_target::<HtmlInputElement>(&ev);
+                    grid.ctx.typing(Typing::of(key.get_value(), &element));
+                    let raw = element.value();
+                    on_input(&raw);
+                    pause.then(move || commit(raw));
                 }
-                on:change=move |ev| commit(event_target_value(&ev))
+                on:change=move |ev| {
+                    pause.cancel();
+                    key.with_value(|key| grid.ctx.stop_typing(key));
+                    commit(event_target_value(&ev));
+                }
+                on:blur=move |ev| left(grid.ctx, key.get_value(), &ev)
                 on:keydown=on_keydown
             />
         </td>

@@ -20,10 +20,12 @@ The form is built from the schema, which the file names in its root element with
   `time [0]`. The **Add** button below a list adds an item, a copy of the last one, and the × on an
   item removes it, as far as the schema allows. An empty list keeps its Add button, which adds an
   item with the elements and attributes the schema requires.
-- Values are checked as you type, and invalid values are never written.
+- Values are written as you type, as soon as you pause, and picks and checkboxes straight away.
+  Values are checked as you type, and invalid values are never written.
 - Every setting shows its documentation and units from the schema.
 - Changed values are marked green until you save, then blue. Save is enabled while a file differs
-  from what's saved, so editing a value back as it was disables it again.
+  from what's saved, so editing a value back as it was disables it again. **Cancel** discards the
+  unsaved changes, after asking.
 - Sections that an enumeration such as `method` doesn't choose are dimmed and collapsed.
 - Filter the settings, and copy the path of any setting.
 - Settings split across files: when an element links to another XML file with `href`, the form
@@ -56,5 +58,5 @@ same way.
   than one of it.
 - The schema must be a local file, and `xs:include`, `xs:import` and `xs:redefine` aren't supported.
 - Undo in the form undoes changes to the file you opened, but not those the form holds for a linked
-  file: change those back in the form. VS Code's Save All doesn't save them either; the form's Save
-  and Ctrl+S do.
+  file: change those back in the form, or discard them with Cancel. VS Code's Save All doesn't save
+  them either; the form's Save and Ctrl+S do.

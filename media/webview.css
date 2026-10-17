@@ -70,19 +70,8 @@ code {
   max-width: 420px;
 }
 
-.toolbar .toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  user-select: none;
-}
-
 .toolbar .spacer {
   flex: 1 1 0;
-}
-
-.toolbar .hidden {
-  display: none;
 }
 
 button {

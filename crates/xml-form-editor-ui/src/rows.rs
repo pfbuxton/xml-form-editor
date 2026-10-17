@@ -244,7 +244,6 @@ pub(crate) struct Folding<'a> {
     pub filter: &'a str,
     /// Sections the user expanded (`true`) or collapsed (`false`), by key
     pub expanded: &'a HashMap<String, bool>,
-    pub hide_unused: bool,
     /// Each document's versions, to mark the values that changed
     pub versions: &'a HashMap<Arc<str>, Versions>,
 }
@@ -304,9 +303,6 @@ impl Above<'_> {
 
 fn walk(node: &FormNode, depth: usize, above: Above, filter: &str, folding: &Folding, out: &mut Vec<Row>) {
     let unused = above.unused || matches!(node.variant, Variant::Unselected { .. });
-    if unused && folding.hide_unused {
-        return;
-    }
     if !filter.is_empty() && !above.matched && !subtree_matches(node, filter) {
         return;
     }
@@ -636,7 +632,6 @@ mod tests {
         Folding {
             filter: "",
             expanded,
-            hide_unused: false,
             versions,
         }
     }

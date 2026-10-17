@@ -19,6 +19,9 @@ const MAX_INDENT: usize = 12;
 /// How long a copy button shows its tick.
 const COPIED_TICK: Duration = Duration::from_millis(1500);
 
+/// How long typing in a field pauses before what's typed is written.
+const TYPING_PAUSE: Duration = Duration::from_millis(300);
+
 pub(crate) fn row_view(row: Row, ctx: Ctx) -> AnyView {
     let key = match &row {
         Row::Section(row) => Some(&row.place.key),
@@ -245,6 +248,14 @@ impl Target {
         }
     }
 
+    /// Identifies the field (see [`Typing::key`]).
+    fn key(&self) -> String {
+        match self {
+            Target::Element(place) => place.key.clone(),
+            Target::Attribute(place, name) => format!("{}/@{name}", place.key),
+        }
+    }
+
     fn set(&self, value: String) -> EditOp {
         match self {
             Target::Element(place) => EditOp::SetValue {
@@ -286,9 +297,10 @@ fn widget(field: &Field) -> Widget {
 
 /// The control that edits a value, with its nil checkbox and any error.
 ///
-/// Only valid values are written. An invalid one stays in the control with the reason it wasn't
-/// written, until it's fixed or Escape restores the value in the file. In the form of a schema, the
-/// control is greyed out (see [`declared_editor`]).
+/// A value typed is written as typing pauses, and one picked straight away. Only valid values are
+/// written: an invalid one stays in the control with the reason it wasn't written, until it's fixed
+/// or Escape restores the value in the file. In the form of a schema, the control is greyed out
+/// (see [`declared_editor`]).
 fn editor(ctx: Ctx, target: Target, field: Field, units: Option<String>, change: Change) -> AnyView {
     if ctx.read_only.get_untracked() {
         return declared_editor(field, units).into_any();
@@ -325,7 +337,11 @@ fn editor(ctx: Ctx, target: Target, field: Field, units: Option<String>, change:
     let control = match widget {
         Widget::Choice(options) => choice(options, current, file_nil, nil, mark, commit).into_any(),
         Widget::Checkbox => checkbox(matches!(current.as_str(), "true" | "1"), mark, commit).into_any(),
-        Widget::Text => text(current, field, nil, Entry { touched, rejected }, input, mark, commit).into_any(),
+        Widget::Text => {
+            let key = target.with_value(Target::key);
+            let entry = Entry { touched, rejected, nil, input };
+            text(ctx, key, current, field, entry, mark, commit).into_any()
+        }
     };
 
     let nil_toggle = nillable.then(|| {
@@ -465,17 +481,38 @@ fn checkbox(checked: bool, mark: Mark, commit: impl Fn(String) + Copy + 'static)
 }
 
 fn text(
+    ctx: Ctx,
+    key: String,
     current: String,
     field: StoredValue<Field>,
-    nil: RwSignal<bool>,
     entry: Entry,
-    input: NodeRef<html::Input>,
     mark: Mark,
     commit: impl Fn(String) + Copy + 'static,
 ) -> impl IntoView {
-    let Entry { touched, rejected } = entry;
+    let Entry { touched, rejected, nil, input } = entry;
     let file_invalid = field.with_value(|f| f.error.is_some() && !f.nil);
     let original = current.clone();
+    let key = StoredValue::new(key);
+    let pause = Pause::new();
+    // Whether what's typed can be written shows straight away
+    let check = move |raw: &str| {
+        touched.set(true);
+        rejected.set(field.with_value(|f| f.check(&f.normalize(raw))));
+    };
+
+    // Writing what's typed rebuilds the field, and this one takes the typing on
+    if let Some(typing) = key.with_value(|key| ctx.typed(key)) {
+        request_animation_frame(move || {
+            if input.is_disposed() || !focus_lost() {
+                return;
+            }
+            if let Some(ahead) = input.get_untracked().and_then(|element| typing.restore(&element)) {
+                check(&ahead);
+                pause.then(move || commit(ahead));
+            }
+        });
+    }
+
     let on_keydown = move |ev: web_sys::KeyboardEvent| match ev.key().as_str() {
         // Leaving the field fires the change event, which writes the value
         "Enter" => {
@@ -484,6 +521,8 @@ fn text(
             }
         }
         "Escape" => {
+            pause.cancel();
+            key.with_value(|key| ctx.stop_typing(key));
             if let Some(element) = input.get() {
                 element.set_value(&original);
             }
@@ -504,14 +543,97 @@ fn text(
             prop:disabled=move || nil.get()
             placeholder=move || if nil.get() { "nil" } else { "" }
             on:input=move |ev| {
-                let raw = event_target_value(&ev);
-                touched.set(true);
-                rejected.set(field.with_value(|f| f.check(&f.normalize(&raw))));
+                let element = event_target::<HtmlInputElement>(&ev);
+                ctx.typing(Typing::of(key.get_value(), &element));
+                let raw = element.value();
+                check(&raw);
+                pause.then(move || commit(raw));
             }
-            on:change=move |ev| commit(event_target_value(&ev))
+            on:change=move |ev| {
+                pause.cancel();
+                key.with_value(|key| ctx.stop_typing(key));
+                commit(event_target_value(&ev));
+            }
+            on:blur=move |ev| left(ctx, key.get_value(), &ev)
             on:keydown=on_keydown
         />
     }
+}
+
+/// What's being typed in a text field or a matrix's cell. It's written as typing pauses (see
+/// [`Pause`]), which rebuilds the field, and the field rebuilt from it takes on what's typed, which
+/// may be ahead of what's written, with the caret where it was, so that typing carries on.
+#[derive(Clone)]
+pub(crate) struct Typing {
+    /// The field's row's key (see [`Place::key`]), and for an attribute or a cell, which one
+    pub key: String,
+    text: String,
+    selection: (u32, u32),
+}
+
+impl Typing {
+    pub(crate) fn of(key: String, element: &HtmlInputElement) -> Typing {
+        let start = element.selection_start().ok().flatten().unwrap_or(0);
+        let end = element.selection_end().ok().flatten().unwrap_or(start);
+        Typing {
+            key,
+            text: element.value(),
+            selection: (start, end),
+        }
+    }
+
+    /// Focuses the field rebuilt from the one typed in, with what was typed and the caret where it
+    /// was. What was typed, when it's ahead of what the field shows, as it's still to be written.
+    pub(crate) fn restore(self, element: &HtmlInputElement) -> Option<String> {
+        let ahead = element.value() != self.text;
+        if ahead {
+            element.set_value(&self.text);
+        }
+        let _ = element.focus();
+        let _ = element.set_selection_range(self.selection.0, self.selection.1);
+        ahead.then_some(self.text)
+    }
+}
+
+/// Waits for typing in a field to pause before writing what's typed. What's waiting is dropped
+/// when the field goes, as the field rebuilt from it takes the typing on (see [`Typing`]).
+#[derive(Clone, Copy)]
+pub(crate) struct Pause(StoredValue<Option<TimeoutHandle>>);
+
+impl Pause {
+    pub(crate) fn new() -> Pause {
+        let pause = Pause(StoredValue::new(None));
+        on_cleanup(move || pause.cancel());
+        pause
+    }
+
+    /// Writes once typing pauses, instead of what was waiting.
+    pub(crate) fn then(self, write: impl FnOnce() + 'static) {
+        self.cancel();
+        self.0.set_value(set_timeout_with_handle(write, TYPING_PAUSE).ok());
+    }
+
+    pub(crate) fn cancel(self) {
+        if let Some(handle) = self.0.try_update_value(Option::take).flatten() {
+            handle.clear();
+        }
+    }
+}
+
+/// Typing in a field is over once the focus leaves it, unless that's as the field is rebuilt, when
+/// the field rebuilt from it takes the typing on.
+pub(crate) fn left(ctx: Ctx, key: String, ev: &web_sys::FocusEvent) {
+    let element = event_target::<HtmlInputElement>(ev);
+    request_animation_frame(move || {
+        if element.is_connected() {
+            ctx.stop_typing(&key);
+        }
+    });
+}
+
+/// Whether the page's focus is lost, as when the element holding it goes.
+pub(crate) fn focus_lost() -> bool {
+    document().active_element().is_none_or(|element| element.tag_name() == "BODY")
 }
 
 pub(crate) fn notes_view(notes: Vec<Note>) -> impl IntoView {
@@ -645,11 +767,14 @@ fn add_view(row: AddRow, ctx: Ctx) -> impl IntoView {
     }
 }
 
-/// A value typed or picked in a control: whether there is one, and why it wasn't written.
+/// A text control's state, which its nil checkbox shares: whether a value has been typed, why it
+/// wasn't written, whether nil is checked, and the input.
 #[derive(Clone, Copy)]
 struct Entry {
     touched: RwSignal<bool>,
     rejected: RwSignal<Option<String>>,
+    nil: RwSignal<bool>,
+    input: NodeRef<html::Input>,
 }
 
 /// How a control shows that its value changed: a green border until the file is saved, then blue.

@@ -107,6 +107,7 @@ type FromWebview =
   | { type: "openSource" }
   | { type: "openSchema"; document: string }
   | { type: "save" }
+  | { type: "discard" }
   | { type: "copy"; text: string };
 
 class FormEditorProvider implements vscode.CustomTextEditorProvider {
@@ -230,6 +231,59 @@ class FormSession implements vscode.Disposable {
     }
   }
 
+  /** Discards the unsaved changes to the file and the files it links to, once that's confirmed. */
+  async discardAll(): Promise<void> {
+    const unsaved = [...this.files.values()]
+      .map(({ uri }) => uri)
+      .filter((uri) => held.get(uri) || vscode.workspace.textDocuments.some((d) => d.isDirty && sameUri(d.uri, uri)));
+    if (unsaved.length === 0) {
+      return;
+    }
+    const discard = "Discard Changes";
+    const choice = await vscode.window.showWarningMessage(
+      `Do you want to discard the unsaved changes to ${unsaved.map(basename).join(", ")}?`,
+      { modal: true, detail: "The files go back to what's saved." },
+      discard,
+    );
+    if (choice !== discard) {
+      return;
+    }
+    for (const uri of unsaved) {
+      if (held.get(uri)) {
+        held.set(uri, undefined);
+      } else {
+        await this.revert(uri);
+      }
+    }
+    // Reverting a linked file showed its tab
+    this.panel.reveal(this.panel.viewColumn);
+  }
+
+  /**
+   * Reverts a document to what's saved. VS Code only reverts the active editor, so that's the form
+   * for the file it was opened on, and for a linked file, its tab: a linked file's changes are in
+   * its document only while a tab shows it.
+   */
+  private async revert(uri: vscode.Uri): Promise<void> {
+    if (sameUri(uri, this.document.uri)) {
+      this.panel.reveal(this.panel.viewColumn);
+    } else {
+      const tab = vscode.window.tabGroups.all
+        .flatMap((group) => group.tabs)
+        .find((tab) => {
+          const shown = tabUri(tab);
+          return shown !== undefined && sameUri(shown, uri);
+        });
+      const column = tab?.group.viewColumn ?? vscode.ViewColumn.Beside;
+      if (tab?.input instanceof vscode.TabInputCustom && tab.input.viewType === VIEW_TYPE) {
+        await vscode.commands.executeCommand("vscode.openWith", uri, VIEW_TYPE, column);
+      } else {
+        await vscode.window.showTextDocument(uri, { viewColumn: column, preview: false });
+      }
+    }
+    await vscode.commands.executeCommand("workbench.action.files.revert");
+  }
+
   private post(message: object): void {
     void this.panel.webview.postMessage(message);
   }
@@ -300,6 +354,9 @@ class FormSession implements vscode.Disposable {
         break;
       case "save":
         await this.saveAll();
+        break;
+      case "discard":
+        await this.discardAll();
         break;
       case "copy":
         // VS Code's clipboard is the local machine's, even in a remote window

@@ -20,6 +20,7 @@ use xml_form_editor_core::{
 };
 
 use crate::bridge::{In, Out};
+use crate::fields::Typing;
 use crate::rows::{Folding, Row, Values, Versions};
 
 #[wasm_bindgen(start)]
@@ -404,6 +405,8 @@ pub(crate) struct Ctx {
     pub(crate) rows: Memo<Vec<Row>>,
     /// The key of a row to focus when it shows (see [`rows::Place::key`])
     focus: StoredValue<Option<String>>,
+    /// What's being typed in a field, to carry over when the field is rebuilt
+    typing: StoredValue<Option<Typing>>,
 }
 
 impl Ctx {
@@ -426,6 +429,23 @@ impl Ctx {
         self.focus
             .try_update_value(|wanted| wanted.take_if(|wanted| wanted == key).is_some())
             .unwrap_or(false)
+    }
+
+    /// Notes what's being typed in a field, for the field rebuilt from it to take on.
+    pub(crate) fn typing(&self, typing: Typing) {
+        self.typing.set_value(Some(typing));
+    }
+
+    /// What was being typed in the field with this key (see [`Typing::key`]).
+    pub(crate) fn typed(&self, key: &str) -> Option<Typing> {
+        self.typing.with_value(|typing| typing.as_ref().filter(|t| t.key == key).cloned())
+    }
+
+    /// Typing in the field with this key is over.
+    pub(crate) fn stop_typing(&self, key: &str) {
+        self.typing.update_value(|typing| {
+            typing.take_if(|t| t.key == key);
+        });
     }
 
     pub(crate) fn edit(&self, document: Arc<str>, op: EditOp) {
@@ -537,7 +557,6 @@ fn App() -> impl IntoView {
     let links: Links = RwSignal::new(HashMap::new());
     let filter = RwSignal::new(String::new());
     let expanded = RwSignal::new(HashMap::<String, bool>::new());
-    let hide_unused = RwSignal::new(false);
     let failure = RwSignal::new(None::<String>);
     let queue = StoredValue::new(EditQueue::default());
     let main_doc = move || {
@@ -601,7 +620,6 @@ fn App() -> impl IntoView {
                     &Folding {
                         filter,
                         expanded,
-                        hide_unused: hide_unused.get(),
                         versions: &versions,
                     },
                 )
@@ -617,6 +635,7 @@ fn App() -> impl IntoView {
         queue,
         rows,
         focus: StoredValue::new(None),
+        typing: StoredValue::new(None),
     };
 
     bridge::on_message(move |message| {
@@ -693,7 +712,6 @@ fn App() -> impl IntoView {
     let show_problems = move |_| {
         let keys = composed.with_untracked(|form| form.as_ref().map(|f| rows::sections_with_problems(f)).unwrap_or_default());
         filter.set(String::new());
-        hide_unused.set(false);
         expanded.update(|sections| sections.extend(keys.into_iter().map(|key| (key, true))));
         request_animation_frame(|| {
             if let Ok(Some(row)) = document().query_selector(".row.problem") {
@@ -715,15 +733,6 @@ fn App() -> impl IntoView {
             />
             <button on:click=move |_| set_all(true)>"Expand all"</button>
             <button on:click=move |_| set_all(false)>"Collapse all"</button>
-            // A schema's sections are all used
-            <label class="toggle" class:hidden=move || schema_view.get()>
-                <input
-                    type="checkbox"
-                    prop:checked=move || hide_unused.get()
-                    on:change=move |ev| hide_unused.set(event_target_checked(&ev))
-                />
-                "Hide unused sections"
-            </label>
             <span class="spacer"></span>
             {move || {
                 let found = problems.get();
@@ -737,6 +746,13 @@ fn App() -> impl IntoView {
                 on:click=move |_| bridge::post(&Out::Save)
             >
                 "Save"
+            </button>
+            <button
+                title="Discard the unsaved changes to the file, and the files it links to"
+                prop:disabled=move || !dirty.get()
+                on:click=move |_| bridge::post(&Out::Discard)
+            >
+                "Cancel"
             </button>
             <button on:click=move |_| bridge::post(&Out::OpenSource)>{source_label}</button>
         </header>

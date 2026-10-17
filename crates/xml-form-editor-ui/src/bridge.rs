@@ -48,6 +48,8 @@ pub(crate) enum Out {
     OpenSchema { document: String },
     /// Save the documents the form shows
     Save,
+    /// Discard the unsaved changes to the documents the form shows, once the user confirms it
+    Discard,
     /// Copy this text to the clipboard
     Copy { text: String },
 }

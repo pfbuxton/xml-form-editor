@@ -13,7 +13,7 @@ use wasm_bindgen::JsCast;
 use web_sys::HtmlInputElement;
 use xml_form_editor_core::{EditOp, Matrix, Severity};
 
-use crate::fields::{Mark, copy_button, label, notes_view, remove_button, row_class, units_label, variant_badge};
+use crate::fields::{Mark, copy_button, doc_text, label, notes_view, remove_button, row_class, units_label, variant_badge};
 use crate::rows::{Change, MatrixRow, Row};
 use crate::{Ctx, FOCUS_WAIT};
 
@@ -244,7 +244,7 @@ pub(crate) fn matrix_view(row: MatrixRow, ctx: Ctx) -> impl IntoView {
                 {copy_path.map(|path| copy_button(ctx, path))}
                 {remove}
             </div>
-            {move || matrix.with(|m| m.doc.clone()).map(|doc| view! { <div class="doc">{doc}</div> }.into_any())}
+            {move || matrix.with(|m| m.doc.clone()).map(|doc| view! { <div class="doc">{doc_text(doc)}</div> }.into_any())}
             // Hidden while there are no rows, rather than rebuilt when the first comes
             <div class="grid-scroll" class:hidden=move || empty.get()>
                 <div class="grid-frame">

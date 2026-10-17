@@ -137,7 +137,7 @@ fn section_view(row: SectionRow, ctx: Ctx) -> impl IntoView {
                 {copy_path.map(|path| copy_button(ctx, path))}
                 {remove}
             </div>
-            {doc.map(|doc| view! { <div class="doc">{doc}</div> })}
+            {doc.map(|doc| view! { <div class="doc">{doc_text(doc)}</div> })}
             {empty.then(|| view! { <div class="doc">"(no settings)"</div> })}
             {notes_view(notes)}
         </div>
@@ -188,7 +188,7 @@ fn value_view(row: ValueRow, ctx: Ctx) -> impl IntoView {
                 {copy_path.map(|path| copy_button(ctx, path))}
                 {remove}
             </div>
-            {doc.map(|doc| view! { <div class="doc">{doc}</div> })}
+            {doc.map(|doc| view! { <div class="doc">{doc_text(doc)}</div> })}
             {selector.then(|| view! { <div class="doc hint">"Chooses which of the sections below is used."</div> })}
             {editor(ctx, Target::Element(place), field, units, change)}
             {notes_view(notes)}
@@ -225,7 +225,7 @@ fn attribute_view(row: AttributeRow, ctx: Ctx) -> impl IntoView {
                 {summary.map(|summary| view! { <span class="type">{summary}</span> })}
                 {copy_button(ctx, copy_path)}
             </div>
-            {doc.map(|doc| view! { <div class="doc">{doc}</div> })}
+            {doc.map(|doc| view! { <div class="doc">{doc_text(doc)}</div> })}
             {editor(ctx, Target::Attribute(place, name), field, units, change)}
             {warning.map(|warning| view! { <div class="note warning">{warning}</div> })}
         </div>
@@ -362,7 +362,7 @@ fn editor(ctx: Ctx, target: Target, field: Field, units: Option<String>, change:
 
     view! {
         <div class="control-line">{control}{units_view(units)}{nil_toggle}</div>
-        {chosen_doc.map(|doc| view! { <div class="option-doc">{doc}</div> })}
+        {chosen_doc.map(|doc| view! { <div class="option-doc">{doc_text(doc)}</div> })}
         {move || (file_nil && !nil.get()).then(|| view! { <div class="hint">"The file keeps nil until you enter a value."</div> })}
         {move || {
             if touched.get() {
@@ -699,4 +699,60 @@ pub(crate) fn label(name: String, index: Option<usize>) -> String {
 /// Units as the schema writes them, except `1`, the IMAS convention for no units.
 pub(crate) fn units_label(units: String) -> String {
     if units == "1" { "dimensionless".to_string() } else { units }
+}
+
+/// Documentation, with what it writes in backticks, `like this`, in the editor's font, as code. A
+/// backtick with none after it to close it shows as written.
+pub(crate) fn doc_text(doc: String) -> impl IntoView {
+    code_spans(&doc)
+        .into_iter()
+        .map(|(text, code)| if code { view! { <code>{text}</code> }.into_any() } else { text.into_any() })
+        .collect_view()
+}
+
+/// The parts of a text, without the backticks around those that are code, each with whether it is.
+fn code_spans(text: &str) -> Vec<(String, bool)> {
+    let mut parts = Vec::new();
+    let mut rest = text;
+    while let Some(open) = rest.find('`')
+        && let Some(length) = rest[open + 1..].find('`')
+    {
+        let close = open + 1 + length;
+        if open > 0 {
+            parts.push((rest[..open].to_string(), false));
+        }
+        parts.push((rest[open + 1..close].to_string(), true));
+        rest = &rest[close + 1..];
+    }
+    if !rest.is_empty() {
+        parts.push((rest.to_string(), false));
+    }
+    parts
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn assert_spans(text: &str, expected: &[(&str, bool)]) {
+        let spans = code_spans(text);
+        let spans: Vec<(&str, bool)> = spans.iter().map(|(text, code)| (text.as_str(), *code)).collect();
+        assert_eq!(spans, expected);
+    }
+
+    #[test]
+    fn code_spans_are_what_backticks_wrap() {
+        assert_spans("How the `time_slices` are constructed", &[
+            ("How the ", false),
+            ("time_slices", true),
+            (" are constructed", false),
+        ]);
+        assert_spans("`a` and `b`", &[("a", true), (" and ", false), ("b", true)]);
+        assert_spans("No code", &[("No code", false)]);
+    }
+
+    #[test]
+    fn a_backtick_left_open_shows_as_written() {
+        assert_spans("`a` then `b", &[("a", true), (" then `b", false)]);
+    }
 }

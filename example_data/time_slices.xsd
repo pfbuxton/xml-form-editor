@@ -9,7 +9,7 @@
     <!-- ===================================== Enums ===================================== -->
 
     <xs:simpleType name="TimeSliceMethod">
-        <xs:annotation><xs:documentation>How the times to reconstruct are chosen</xs:documentation></xs:annotation>
+        <xs:annotation><xs:documentation>How the `time_slices` are constructed</xs:documentation></xs:annotation>
         <xs:restriction base="xs:string">
             <xs:enumeration value="times">
                 <xs:annotation><xs:documentation>The times listed in times</xs:documentation></xs:annotation>
@@ -51,7 +51,7 @@
     <!-- ================================= The settings file ================================= -->
 
     <xs:element name="time_slices">
-        <xs:annotation><xs:documentation>The times at which the equilibrium is reconstructed, and the settings that change between them</xs:documentation></xs:annotation>
+        <xs:annotation><xs:documentation>How the `time_slices` are constructed</xs:documentation></xs:annotation>
         <xs:complexType>
             <xs:sequence>
                 <xs:element name="method" type="TimeSliceMethod">

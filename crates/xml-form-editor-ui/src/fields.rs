@@ -742,11 +742,10 @@ mod tests {
 
     #[test]
     fn code_spans_are_what_backticks_wrap() {
-        assert_spans("How the `time_slices` are constructed", &[
-            ("How the ", false),
-            ("time_slices", true),
-            (" are constructed", false),
-        ]);
+        assert_spans(
+            "How the `time_slices` are constructed",
+            &[("How the ", false), ("time_slices", true), (" are constructed", false)],
+        );
         assert_spans("`a` and `b`", &[("a", true), (" and ", false), ("b", true)]);
         assert_spans("No code", &[("No code", false)]);
     }

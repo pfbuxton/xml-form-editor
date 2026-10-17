@@ -1,10 +1,11 @@
 //! The logic of the XML Form Editor, independent of VS Code and the browser: reading an XSD,
-//! building a form from an XML document and its schema, checking values, and turning a changed
-//! value into minimal edits of the XML text.
+//! building a form from an XML document and its schema, or from a schema alone, checking values,
+//! and turning a changed value into minimal edits of the XML text.
 
 mod edit;
 mod form;
 mod schema;
+mod schema_form;
 mod simple;
 mod text;
 mod xml;
@@ -14,6 +15,7 @@ pub use form::{
     AttributeField, Field, Form, FormNode, Linked, List, Matrix, NewContent, NewElement, NewItem, NodeKind, Note, Problems, Severity, Variant, build_form,
     values,
 };
-pub use schema::{Schema, SchemaError};
+pub use schema::{Occurs, Schema, SchemaError};
+pub use schema_form::{build_schema_form, is_schema};
 pub use simple::{Bound, Builtin, EnumValue, SimpleInfo};
 pub use xml::{Path, Step, XmlError, schema_location};

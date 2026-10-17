@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::Arc;
 
-use xml_form_editor_core::{AttributeField, EditOp, Field, Form, FormNode, List, Matrix, NodeKind, Note, Path, Variant};
+use xml_form_editor_core::{AttributeField, EditOp, Field, Form, FormNode, List, Matrix, NodeKind, Note, Occurs, Path, Variant};
 
 use crate::Shared;
 
@@ -59,6 +59,8 @@ pub(crate) struct SectionRow {
     /// The file the section shows, when it links to one
     pub linked_file: Option<LinkedFile>,
     pub remove: Remove,
+    /// In the form of a schema, how many of the element it allows (see [`FormNode::occurs`])
+    pub occurs: Option<Occurs>,
 }
 
 /// The file a section links to and shows.
@@ -85,6 +87,7 @@ pub(crate) struct ValueRow {
     pub units: Option<String>,
     pub change: Change,
     pub remove: Remove,
+    pub occurs: Option<Occurs>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -371,6 +374,7 @@ fn walk(node: &FormNode, depth: usize, above: Above, filter: &str, folding: &Fol
                     document: linked.document.as_str().into(),
                 }),
                 remove,
+                occurs: node.occurs,
             }));
             if expanded {
                 walk_contents(node, depth + 1, inner, filter, folding, out);
@@ -393,6 +397,7 @@ fn walk(node: &FormNode, depth: usize, above: Above, filter: &str, folding: &Fol
                 units: node.units.clone(),
                 change: Change::of(&node.path.to_string(), field.as_written(), versions),
                 remove,
+                occurs: node.occurs,
             }));
             walk_contents(node, depth + 1, inner, filter, folding, out);
         }

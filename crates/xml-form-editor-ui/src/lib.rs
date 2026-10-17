@@ -1,6 +1,7 @@
 //! The form editor's webview. It shows the form for the document the extension sends, with the
 //! files that document links to in place, and sends back the edits the form makes;
-//! `src/extension.ts` is the other side.
+//! `src/extension.ts` is the other side. A document that is a schema shows as the form of what it
+//! declares, which has no values to edit.
 
 mod bridge;
 mod fields;
@@ -14,7 +15,9 @@ use std::time::Duration;
 
 use leptos::prelude::*;
 use wasm_bindgen::prelude::*;
-use xml_form_editor_core::{EditOp, Form, FormNode, Linked, NodeKind, Note, Problems, Schema, XmlError, apply_edit, build_form, schema_location, values};
+use xml_form_editor_core::{
+    EditOp, Form, FormNode, Linked, NodeKind, Note, Problems, Schema, XmlError, apply_edit, build_form, build_schema_form, is_schema, schema_location, values,
+};
 
 use crate::bridge::{In, Out};
 use crate::rows::{Folding, Row, Values, Versions};
@@ -108,6 +111,9 @@ struct Doc {
     /// Whether the document differs from the file as saved. VS Code counts a document as dirty
     /// from its first edit until it's saved, even when the edits put back what was there.
     changed: Memo<bool>,
+    /// Whether the document is a schema, which shows as the form of what it declares (see
+    /// [`build_schema_form`]), and names no schema of its own
+    is_schema: Memo<bool>,
     schema: RwSignal<SchemaState>,
     /// `None` until there's a document, and while its schema loads
     built: Memo<Option<Built>>,
@@ -135,8 +141,22 @@ impl Doc {
                 })
         });
 
-        // The schema the document names; `None` while there's no document, or it isn't well-formed
-        let named_schema = Memo::new(move |_| xml.with(|x| x.as_ref().and_then(|x| schema_location(&x.text).ok())));
+        // While the document isn't well-formed, it stays what it was
+        let is_schema = Memo::new(move |previous: Option<&bool>| {
+            xml.with(|x| match x.as_ref().map(|x| is_schema(&x.text)) {
+                Some(Ok(is_schema)) => is_schema,
+                _ => previous.copied().unwrap_or(false),
+            })
+        });
+
+        // The schema the document names; `None` while there's no document, or it isn't well-formed,
+        // and for a schema
+        let named_schema = Memo::new(move |_| {
+            if is_schema.get() {
+                return None;
+            }
+            xml.with(|x| x.as_ref().and_then(|x| schema_location(&x.text).ok()))
+        });
 
         Effect::new(move |_| {
             let Some(named) = named_schema.get() else {
@@ -160,6 +180,9 @@ impl Doc {
 
         let built = Memo::new(move |_| {
             let xml = xml.get()?;
+            if is_schema.get() {
+                return Some(Shared(Arc::new(build_schema_form(&xml.text))));
+            }
             let state = schema.get();
             let named = named_schema.get().flatten();
             if matches!(state, SchemaState::Loading { .. }) || state.location() != named.as_deref() {
@@ -178,6 +201,7 @@ impl Doc {
             saved,
             original,
             changed,
+            is_schema,
             schema,
             built,
             saved_values: Memo::new(move |_| saved.with(version_values)),
@@ -236,6 +260,10 @@ impl Doc {
     }
 
     fn versions(&self) -> Versions {
+        // A schema's form has no values to compare
+        if self.is_schema.get() {
+            return Versions::default();
+        }
         Versions {
             saved: self.saved_values.get(),
             original: self.original_values.get(),
@@ -301,6 +329,11 @@ fn attach_links(node: &mut FormNode, document: &Arc<str>, chain: &mut Vec<Arc<st
     let Some(doc) = docs.with(|docs| docs.get(&target).copied()) else {
         return;
     };
+    if doc.is_schema.get() {
+        node.notes
+            .push(Note::error(format!("{href} is a schema, not a file of settings, so it isn't shown")));
+        return;
+    }
     // `None` while the file or its schema loads
     let Some(built) = doc.built.get() else {
         return;
@@ -362,6 +395,8 @@ struct InFlight {
 #[derive(Clone, Copy)]
 pub(crate) struct Ctx {
     docs: Docs,
+    /// Set while the form shows a schema, whose values are greyed out, as it has none to edit
+    pub(crate) read_only: Memo<bool>,
     pub(crate) expanded: RwSignal<HashMap<String, bool>>,
     failure: RwSignal<Option<String>>,
     queue: StoredValue<EditQueue>,
@@ -394,6 +429,10 @@ impl Ctx {
     }
 
     pub(crate) fn edit(&self, document: Arc<str>, op: EditOp) {
+        // A schema's form has nothing to change
+        if self.read_only.get_untracked() {
+            return;
+        }
         self.queue.update_value(|queue| queue.waiting.push_back(Pending { document, op, attempts: 0 }));
         self.send_next();
     }
@@ -505,6 +544,15 @@ fn App() -> impl IntoView {
         let uri = main.get()?;
         docs.with(|docs| docs.get(&uri).copied())
     };
+    // Whether the form shows a schema, which has a page of its own colour, so that it can't be
+    // taken for a document's
+    let schema_view = Memo::new(move |_| main_doc().is_some_and(|doc| doc.is_schema.get()));
+    Effect::new(move |_| {
+        if let Some(body) = document().body() {
+            let _ = body.class_list().toggle_with_force("schema", schema_view.get());
+        }
+    });
+    let source_label = move || if schema_view.get() { "Open XSD" } else { "Open XML" };
 
     // Open the files the documents link to
     Effect::new(move |_| {
@@ -563,6 +611,7 @@ fn App() -> impl IntoView {
 
     let ctx = Ctx {
         docs,
+        read_only: schema_view,
         expanded,
         failure,
         queue,
@@ -666,7 +715,8 @@ fn App() -> impl IntoView {
             />
             <button on:click=move |_| set_all(true)>"Expand all"</button>
             <button on:click=move |_| set_all(false)>"Collapse all"</button>
-            <label class="toggle">
+            // A schema's sections are all used
+            <label class="toggle" class:hidden=move || schema_view.get()>
                 <input
                     type="checkbox"
                     prop:checked=move || hide_unused.get()
@@ -688,9 +738,22 @@ fn App() -> impl IntoView {
             >
                 "Save"
             </button>
-            <button on:click=move |_| bridge::post(&Out::OpenSource)>"Open XML"</button>
+            <button on:click=move |_| bridge::post(&Out::OpenSource)>{source_label}</button>
         </header>
-        {move || main.get().zip(main_doc()).map(|(uri, doc)| schema_status(doc.schema.get(), uri))}
+        {move || {
+            if schema_view.get() {
+                return Some(
+                    view! {
+                        <div class="status schema-status">
+                            <strong>"Schema"</strong>
+                            ": the settings it declares, as a file's form shows them. Their values are edited in the files that use it."
+                        </div>
+                    }
+                    .into_any(),
+                );
+            }
+            main.get().zip(main_doc()).map(|(uri, doc)| schema_status(doc.schema.get(), uri))
+        }}
         {move || failure.get().map(|message| view! { <div class="banner error">{message}</div> })}
         {move || match main_doc().and_then(|doc| doc.built.get()) {
             None => Some(view! { <div class="status">"Loading…"</div> }.into_any()),
@@ -700,7 +763,7 @@ fn App() -> impl IntoView {
                         <strong>"The XML is not well-formed, so the form can't be shown. "</strong>
                         {error.message.clone()}
                         " "
-                        <button on:click=move |_| bridge::post(&Out::OpenSource)>"Open XML"</button>
+                        <button on:click=move |_| bridge::post(&Out::OpenSource)>{source_label}</button>
                     </div>
                 }
                 .into_any()

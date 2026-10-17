@@ -33,13 +33,18 @@ The form is built from the schema, which the file names in its root element with
   every file with unsaved changes, so it would otherwise open one for each linked file you change.
   Open the file, and its tab shows them as unsaved changes. The changes the form holds are backed
   up, and if VS Code closes before you save, the form has them again when it next shows the file.
+- Schemas: open an XSD in the form editor to see the form it describes, with every element and
+  attribute it declares, its documentation, type and units, and how many of it the schema allows,
+  such as `optional` or `1 or more`. The fields are greyed out, as a schema has no values, and the
+  page is dark green, so it can't be mistaken for a file's form.
 
 Each change edits only the text it needs to, so formatting, comments and Undo keep working.
 
 ## Getting started
 
 Open an XML file and click **Open Form Editor to the Side** in the editor title bar, or right-click
-the file in the Explorer and choose **Open in Form Editor**. Save with Ctrl+S.
+the file in the Explorer and choose **Open in Form Editor**. Save with Ctrl+S. XSD files open the
+same way.
 
 ## Limitations
 

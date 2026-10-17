@@ -1,7 +1,7 @@
 // The extension host side of the XML Form Editor. It opens XML files in the form, gives the
 // webview (crates/xml-form-editor-ui) the document, the files it links to and the schemas they
 // name, and applies the edits the webview sends back. Everything else, from reading the schemas to
-// computing the edits, is Rust.
+// computing the edits, is Rust. An XSD opens in the form too, which shows what it declares.
 
 import * as vscode from "vscode";
 
@@ -54,7 +54,7 @@ export function deactivate(): void {}
 async function openForm(uri: vscode.Uri | undefined, column: vscode.ViewColumn): Promise<void> {
   const target = uri ?? activeUri();
   if (!target) {
-    void vscode.window.showInformationMessage("Open an XML file first, then open it in the form editor.");
+    void vscode.window.showInformationMessage("Open an XML or XSD file first, then open it in the form editor.");
     return;
   }
   await vscode.commands.executeCommand("vscode.openWith", target, VIEW_TYPE, column);

@@ -1,7 +1,9 @@
 //! Tests against the GSFit settings in `example_data`: the numerics, the time-slices, and the overall
 //! settings that link to both.
 
-use xml_form_editor_core::{EditOp, Form, FormNode, NodeKind, Schema, Severity, TextEdit, Variant, apply_edit, build_form, values};
+use xml_form_editor_core::{
+    EditOp, Form, FormNode, NodeKind, Occurs, Schema, Severity, TextEdit, Variant, apply_edit, build_form, build_schema_form, is_schema, values,
+};
 
 const XML: &str = include_str!("../../../example_data/numerics.xml");
 const XSD: &str = include_str!("../../../example_data/numerics.xsd");
@@ -109,6 +111,51 @@ fn the_examples_are_valid() {
     valid(TIME_SLICES_XML, TIME_SLICES_XSD);
     let overall = valid(OVERALL_XML, OVERALL_XSD);
     assert_eq!(overall.links(), ["numerics.xml", "time_slices.xml"]);
+}
+
+/// The paths of the elements in a form, in order.
+fn paths(node: &FormNode, out: &mut Vec<String>) {
+    out.push(node.path.to_string());
+    if let NodeKind::Section { children } = &node.kind {
+        children.iter().for_each(|c| paths(c, out));
+    }
+}
+
+#[test]
+fn the_schemas_show_as_forms_of_what_they_declare() {
+    for (xml, xsd) in [(XML, XSD), (TIME_SLICES_XML, TIME_SLICES_XSD), (OVERALL_XML, OVERALL_XSD)] {
+        assert_eq!((is_schema(xsd), is_schema(xml)), (Ok(true), Ok(false)));
+        let mut found = Vec::new();
+        problems(&build_schema_form(xsd).unwrap().root, &mut found);
+        assert!(found.is_empty(), "unexpected problems:\n{}", found.join("\n"));
+    }
+
+    // numerics.xml has each element its schema declares, once, so the forms show the same elements
+    let declared = build_schema_form(XSD).unwrap();
+    let (mut shown, mut expected) = (Vec::new(), Vec::new());
+    paths(&declared.root, &mut shown);
+    paths(&form(XML).root, &mut expected);
+    assert_eq!(shown, expected);
+    assert!(field(&declared, "/numerics/n_iter_max").value.is_empty());
+    assert!(node(&declared, "/numerics/nonlinear_solver/method").selector);
+    assert_eq!(
+        node(&declared, "/numerics/nonlinear_solver/newton_krylov").variant,
+        Variant::Alternative {
+            selector: "method".into(),
+            value: "newton_krylov".into()
+        }
+    );
+
+    let declared = build_schema_form(TIME_SLICES_XSD).unwrap();
+    let occurs = |path| node(&declared, path).occurs.and_then(Occurs::label);
+    assert_eq!(occurs("/time_slices/times/time").as_deref(), Some("1 or more"));
+    assert_eq!(occurs("/time_slices/override").as_deref(), Some("0 or more"));
+    assert_eq!(occurs("/time_slices/method"), None);
+
+    let declared = build_schema_form(OVERALL_XSD).unwrap();
+    let numerics = node(&declared, "/overall_code_settings/numerics");
+    assert_eq!(numerics.attributes[0].name, "href");
+    assert_eq!(numerics.link, None, "a schema links to no files");
 }
 
 #[test]

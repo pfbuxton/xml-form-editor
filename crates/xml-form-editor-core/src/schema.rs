@@ -14,7 +14,7 @@ use roxmltree::Node;
 use crate::simple::{Bound, Builtin, EnumValue, Facets, SimpleInfo};
 use crate::xml::{local_name, parse};
 
-const XS_NS: &str = "http://www.w3.org/2001/XMLSchema";
+pub(crate) const XS_NS: &str = "http://www.w3.org/2001/XMLSchema";
 
 /// Deep enough for any real schema, while stopping circular type references.
 pub(crate) const MAX_DEPTH: usize = 40;
@@ -35,6 +35,10 @@ impl std::error::Error for SchemaError {}
 #[derive(Debug, Default)]
 pub struct Schema {
     elements: HashMap<String, ElementDecl>,
+    /// The global elements a document can start with, in the schema's order (see [`Schema::roots`])
+    roots: Vec<String>,
+    /// The schema's own `xs:documentation`
+    doc: Option<String>,
     simple_types: HashMap<String, SimpleTypeDef>,
     complex_types: HashMap<String, ComplexTypeDef>,
     groups: HashMap<String, Particle>,
@@ -98,11 +102,31 @@ enum Content {
     },
 }
 
-#[derive(Clone, Copy, Debug)]
-struct Occurs {
-    min: u32,
+/// How many of an element the schema allows in a place, as `minOccurs` and `maxOccurs` give it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Occurs {
+    pub min: u32,
     /// `None` for unbounded
-    max: Option<u32>,
+    pub max: Option<u32>,
+}
+
+impl Occurs {
+    /// Exactly one, as an element is unless the schema says otherwise.
+    pub const ONCE: Occurs = Occurs { min: 1, max: Some(1) };
+
+    /// How many, in words: `optional`, `1 or more`, `up to 3` or `2 to 5`. `None` for exactly one,
+    /// which goes without saying.
+    pub fn label(self) -> Option<String> {
+        Some(match (self.min, self.max) {
+            (1, Some(1)) => return None,
+            (0, Some(0)) => "not allowed".to_string(),
+            (0, Some(1)) => "optional".to_string(),
+            (min, None) => format!("{min} or more"),
+            (0, Some(max)) => format!("up to {max}"),
+            (min, Some(max)) if min == max => format!("exactly {min}"),
+            (min, Some(max)) => format!("{min} to {max}"),
+        })
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -163,11 +187,16 @@ impl Schema {
         if !is_xs(root, "schema") {
             return Err(SchemaError("The schema's root element is not xs:schema".into()));
         }
-        let mut schema = Schema::default();
+        let mut schema = Schema {
+            doc: documentation(root),
+            ..Schema::default()
+        };
+        let mut globals = Vec::new();
         for child in xs_children(root) {
             match child.tag_name().name() {
                 "element" => {
                     let decl = element_decl(child);
+                    globals.push(decl.name.clone());
                     schema.elements.insert(decl.name.clone(), decl);
                 }
                 "simpleType" => {
@@ -206,7 +235,28 @@ impl Schema {
         if schema.elements.is_empty() {
             return Err(SchemaError("The schema declares no global elements".into()));
         }
+        // Those that other elements refer to are usually parts of a document, not its root
+        let referenced: Vec<&str> = root
+            .descendants()
+            .filter(|node| is_xs(*node, "element"))
+            .filter_map(|node| node.attribute("ref").map(local_name))
+            .collect();
+        schema.roots = globals.iter().filter(|name| !referenced.contains(&name.as_str())).cloned().collect();
+        if schema.roots.is_empty() {
+            schema.roots = globals;
+        }
         Ok(schema)
+    }
+
+    /// The global elements a document can start with: those that no other element refers to, or
+    /// when each is referred to, all of them. In the schema's order.
+    pub(crate) fn roots(&self) -> impl Iterator<Item = &ElementDecl> {
+        self.roots.iter().filter_map(|name| self.elements.get(name))
+    }
+
+    /// The schema's own documentation, from the `xs:annotation` of its `xs:schema` element.
+    pub(crate) fn doc(&self) -> Option<&str> {
+        self.doc.as_deref()
     }
 
     /// Parts of the schema the form doesn't understand, which leave some values unchecked.

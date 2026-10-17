@@ -2,6 +2,7 @@
    the current theme; each has a fallback for viewing the page outside VS Code. */
 
 :root {
+  --page-background: var(--vscode-editor-background, #1f1f1f);
   --indent: 20px;
   --gutter: 20px;
   --border: var(--vscode-widget-border, var(--vscode-panel-border, rgba(128, 128, 128, 0.35)));
@@ -15,11 +16,27 @@ html,
 body {
   margin: 0;
   padding: 0;
-  background: var(--vscode-editor-background, #1f1f1f);
+  background: var(--page-background);
   color: var(--vscode-foreground, #cccccc);
   font-family: var(--vscode-font-family, system-ui, sans-serif);
   font-size: var(--vscode-font-size, 13px);
   line-height: 1.45;
+}
+
+/* The page's colour fills the window, however little it shows */
+body {
+  min-height: 100vh;
+}
+
+/* A schema's form has a dark green page, so that it can't be taken for a file's. A light theme's
+   text would be lost on dark green, so it has a light one. */
+body.schema {
+  --page-background: #0f3320;
+}
+
+body.schema.vscode-light,
+body.schema.vscode-high-contrast-light {
+  --page-background: #ddefe2;
 }
 
 button,
@@ -43,7 +60,7 @@ code {
   align-items: center;
   gap: 8px 10px;
   padding: 10px var(--gutter);
-  background: var(--vscode-editor-background, #1f1f1f);
+  background: var(--page-background);
   border-bottom: 1px solid var(--border);
 }
 
@@ -62,6 +79,10 @@ code {
 
 .toolbar .spacer {
   flex: 1 1 0;
+}
+
+.toolbar .hidden {
+  display: none;
 }
 
 button {
@@ -214,6 +235,10 @@ input[type="checkbox"] {
 
 .status {
   color: var(--vscode-descriptionForeground, #9d9d9d);
+}
+
+.status.schema-status strong {
+  color: var(--vscode-foreground, #cccccc);
 }
 
 .banner {
@@ -504,6 +529,17 @@ a:hover {
   color: var(--vscode-descriptionForeground, #9d9d9d);
 }
 
+/* In a schema's form, how many of an element it allows, such as "optional" or "1 or more" */
+.badge.occurs {
+  border-color: var(--border);
+  color: var(--vscode-descriptionForeground, #9d9d9d);
+}
+
+/* In a schema's form, the values an enumeration allows */
+.allowed code {
+  color: var(--vscode-foreground, #cccccc);
+}
+
 .error,
 .note.error {
   margin-top: 4px;
@@ -586,7 +622,7 @@ a:hover {
   left: 0;
   z-index: 1;
   background: linear-gradient(var(--grid-header), var(--grid-header)),
-    var(--vscode-editor-background, #1f1f1f);
+    var(--page-background);
 }
 
 .grid th.index {
@@ -609,7 +645,7 @@ a:hover {
 /* The numbers of the focused cell's row and column, marked as a spreadsheet marks them */
 .grid th.index.active {
   background: linear-gradient(var(--grid-header-active), var(--grid-header-active)),
-    var(--vscode-editor-background, #1f1f1f);
+    var(--page-background);
   color: var(--vscode-foreground, #cccccc);
 }
 

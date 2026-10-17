@@ -1,8 +1,8 @@
 {
   "name": "xml-form-editor",
   "displayName": "XML Form Editor",
-  "description": "Edit the values in an XML file in a form built from its XSD schema: dropdowns for enumerations, checkboxes for booleans, and checking as you type.",
-  "version": "0.1.5",
+  "description": "Edit the values in an XML file in a form built from its XSD schema: dropdowns for enumerations, checkboxes for booleans, and checking as you type. Open the schema itself to see the form it describes.",
+  "version": "0.1.6",
   "publisher": "pfbuxton",
   "license": "BSD-3-Clause",
   "repository": {
@@ -37,6 +37,9 @@
         "selector": [
           {
             "filenamePattern": "*.xml"
+          },
+          {
+            "filenamePattern": "*.xsd"
           }
         ],
         "priority": "option"
@@ -79,7 +82,7 @@
       "editor/title": [
         {
           "command": "xmlFormEditor.openFormToSide",
-          "when": "resourceExtname == .xml && activeCustomEditorId != xmlFormEditor.form",
+          "when": "(resourceExtname == .xml || resourceExtname == .xsd) && activeCustomEditorId != xmlFormEditor.form",
           "group": "navigation"
         },
         {
@@ -91,18 +94,18 @@
       "explorer/context": [
         {
           "command": "xmlFormEditor.openForm",
-          "when": "resourceExtname == .xml",
+          "when": "resourceExtname == .xml || resourceExtname == .xsd",
           "group": "navigation"
         }
       ],
       "commandPalette": [
         {
           "command": "xmlFormEditor.openForm",
-          "when": "resourceExtname == .xml"
+          "when": "resourceExtname == .xml || resourceExtname == .xsd"
         },
         {
           "command": "xmlFormEditor.openFormToSide",
-          "when": "resourceExtname == .xml"
+          "when": "resourceExtname == .xml || resourceExtname == .xsd"
         },
         {
           "command": "xmlFormEditor.openSource",

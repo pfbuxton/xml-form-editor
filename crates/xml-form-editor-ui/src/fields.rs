@@ -1,4 +1,5 @@
-//! The rows' views: section headings, and the controls that edit values.
+//! The rows' views: section headings, and the controls that edit values, which are greyed out in
+//! the form of a schema.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -7,7 +8,7 @@ use leptos::html;
 use leptos::prelude::*;
 use wasm_bindgen::JsCast;
 use web_sys::{HtmlElement, HtmlInputElement};
-use xml_form_editor_core::{AttributeField, EditOp, EnumValue, Field, Note, Severity, Variant};
+use xml_form_editor_core::{AttributeField, EditOp, EnumValue, Field, Note, Occurs, Severity, Variant};
 
 use crate::Ctx;
 use crate::rows::{AddRow, AttributeRow, Change, LinkedFile, Place, Row, SectionRow, ValueRow};
@@ -94,6 +95,7 @@ fn section_view(row: SectionRow, ctx: Ctx) -> impl IntoView {
         empty,
         linked_file,
         remove,
+        occurs,
     } = row;
     let problem = notes.iter().any(|n| n.severity == Severity::Error);
     let Place { document, key, .. } = place;
@@ -129,6 +131,7 @@ fn section_view(row: SectionRow, ctx: Ctx) -> impl IntoView {
                     </button>
                 })}
                 {name}
+                {occurs_badge(occurs)}
                 {linked_file.map(|file| file_badge(ctx, file))}
                 {variant_badge(&variant)}
                 {copy_path.map(|path| copy_button(ctx, path))}
@@ -167,6 +170,7 @@ fn value_view(row: ValueRow, ctx: Ctx) -> impl IntoView {
         units,
         change,
         remove,
+        occurs,
     } = row;
     let problem = field.error.is_some() || notes.iter().any(|n| n.severity == Severity::Error);
     let summary = field.ty.as_ref().map(|ty| ty.summary());
@@ -178,6 +182,7 @@ fn value_view(row: ValueRow, ctx: Ctx) -> impl IntoView {
         <div class=row_class("value", depth, unused, problem) data-path=key>
             <div class="title">
                 <span class="name">{label}</span>
+                {occurs_badge(occurs)}
                 {summary.map(|summary| view! { <span class="type" title=type_doc>{summary}</span> })}
                 {variant_badge(&variant)}
                 {copy_path.map(|path| copy_button(ctx, path))}
@@ -206,6 +211,7 @@ fn attribute_view(row: AttributeRow, ctx: Ctx) -> impl IntoView {
         field,
         units,
         warning,
+        occurs,
     } = attribute;
     let problem = field.error.is_some();
     let summary = field.ty.as_ref().map(|ty| ty.summary());
@@ -215,6 +221,7 @@ fn attribute_view(row: AttributeRow, ctx: Ctx) -> impl IntoView {
         <div class=row_class("value attribute", depth, unused, problem) data-path=key>
             <div class="title">
                 <span class="name">{label}</span>
+                {occurs_badge(occurs)}
                 {summary.map(|summary| view! { <span class="type">{summary}</span> })}
                 {copy_button(ctx, copy_path)}
             </div>
@@ -282,8 +289,12 @@ fn widget(field: &Field) -> Widget {
 /// The control that edits a value, with its nil checkbox and any error.
 ///
 /// Only valid values are written. An invalid one stays in the control with the reason it wasn't
-/// written, until it's fixed or Escape restores the value in the file.
-fn editor(ctx: Ctx, target: Target, field: Field, units: Option<String>, change: Change) -> impl IntoView {
+/// written, until it's fixed or Escape restores the value in the file. In the form of a schema, the
+/// control is greyed out (see [`declared_editor`]).
+fn editor(ctx: Ctx, target: Target, field: Field, units: Option<String>, change: Change) -> AnyView {
+    if ctx.read_only.get_untracked() {
+        return declared_editor(field, units).into_any();
+    }
     // Set once the user types or picks a value, which then decides what error shows
     let touched = RwSignal::new(false);
     let rejected = RwSignal::new(None::<String>);
@@ -322,7 +333,6 @@ fn editor(ctx: Ctx, target: Target, field: Field, units: Option<String>, change:
         Widget::Checkbox => checkbox(matches!(current.as_str(), "true" | "1"), mark, commit).into_any(),
         Widget::Text => text(current, field, nil, Entry { touched, rejected }, input, mark, commit).into_any(),
     };
-    let units = units.map(|units| view! { <span class="units" title="Units">{units_label(units)}</span> });
 
     let nil_toggle = nillable.then(|| {
         let on_change = move |ev: web_sys::Event| {
@@ -351,7 +361,7 @@ fn editor(ctx: Ctx, target: Target, field: Field, units: Option<String>, change:
     });
 
     view! {
-        <div class="control-line">{control}{units}{nil_toggle}</div>
+        <div class="control-line">{control}{units_view(units)}{nil_toggle}</div>
         {chosen_doc.map(|doc| view! { <div class="option-doc">{doc}</div> })}
         {move || (file_nil && !nil.get()).then(|| view! { <div class="hint">"The file keeps nil until you enter a value."</div> })}
         {move || {
@@ -362,6 +372,56 @@ fn editor(ctx: Ctx, target: Target, field: Field, units: Option<String>, change:
             }
         }}
     }
+    .into_any()
+}
+
+/// The control of a value in the form of a schema, greyed out, as a schema has no values: it holds
+/// the value the schema fixes, if any. Below an enumeration are the values it allows, which its
+/// dropdown can't show, with each one's documentation as its tooltip.
+fn declared_editor(field: Field, units: Option<String>) -> impl IntoView {
+    let value = field.value.clone();
+    let control = match widget(&field) {
+        Widget::Choice(_) => view! {
+            <select class="control" disabled=true>
+                <option>{value}</option>
+            </select>
+        }
+        .into_any(),
+        Widget::Checkbox => {
+            let checked = matches!(value.as_str(), "true" | "1");
+            view! {
+                <label class="checkbox">
+                    <input type="checkbox" disabled=true prop:checked=checked />
+                </label>
+            }
+            .into_any()
+        }
+        Widget::Text => view! { <input type="text" class="control" disabled=true prop:value=value /> }.into_any(),
+    };
+    let nil = field.nillable.then(|| {
+        view! {
+            <label class="nil" title="xsi:nil: the element may have no value">
+                <input type="checkbox" disabled=true />
+                "nil"
+            </label>
+        }
+    });
+    let allowed = field.ty.map(|ty| ty.enumeration).filter(|values| !values.is_empty()).map(|values| {
+        let values = values
+            .into_iter()
+            .enumerate()
+            .map(|(i, EnumValue { value, doc })| view! { {(i > 0).then_some(", ")}<code title=doc>{value}</code> })
+            .collect_view();
+        view! { <div class="option-doc allowed">"One of: " {values}</div> }
+    });
+    view! {
+        <div class="control-line">{control}{units_view(units)}{nil}</div>
+        {allowed}
+    }
+}
+
+fn units_view(units: Option<String>) -> Option<impl IntoView + use<>> {
+    units.map(|units| view! { <span class="units" title="Units">{units_label(units)}</span> })
 }
 
 fn choice(
@@ -480,8 +540,15 @@ pub(crate) fn variant_badge(variant: &Variant) -> Option<impl IntoView + use<>> 
         Variant::Selected { selector } => ("badge used", format!("used: chosen by {selector}")),
         Variant::Unselected { selector, value } if value.is_empty() => ("badge unused", format!("not used: {selector} is not set")),
         Variant::Unselected { selector, value } => ("badge unused", format!("not used: {selector} is {value}")),
+        Variant::Alternative { selector, value } => ("badge used", format!("used when {selector} is {value}")),
     };
     Some(view! { <span class=class>{text}</span> })
+}
+
+/// In the form of a schema, how many of an element or attribute it allows, unless exactly one.
+fn occurs_badge(occurs: Option<Occurs>) -> Option<impl IntoView + use<>> {
+    let text = occurs?.label()?;
+    Some(view! { <span class="badge occurs" title="How many the schema allows here">{text}</span> })
 }
 
 /// The button that copies a row's path (see [`crate::rows::SectionRow::copy_path`]). It shows a

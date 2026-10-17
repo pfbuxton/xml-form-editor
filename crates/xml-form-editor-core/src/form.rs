@@ -9,7 +9,7 @@ use std::collections::HashMap;
 
 use roxmltree::Node;
 
-use crate::schema::{AttributeDecl, ChildDecl, ElementContent, ElementDecl, MAX_DEPTH, Schema};
+use crate::schema::{AttributeDecl, ChildDecl, ElementContent, ElementDecl, MAX_DEPTH, Occurs, Schema};
 use crate::simple::SimpleInfo;
 use crate::xml::{Path, XSI_NS, XmlError, attribute_namespace, is_nil, local_name, parse, scan_start_tag, schema_location_of};
 
@@ -49,6 +49,9 @@ pub struct FormNode {
     pub matrix: Option<Matrix>,
     /// The lists in the section, whose items the form adds and removes
     pub lists: Vec<List>,
+    /// In the form of a schema, how many of the element the schema allows where it is (see
+    /// [`crate::build_schema_form`]); `None` in the form of a document
+    pub occurs: Option<Occurs>,
 }
 
 /// A list in a section: an element the schema allows more than one of there, or that there's
@@ -206,6 +209,9 @@ pub struct AttributeField {
     pub units: Option<String>,
     /// Set when the schema doesn't declare the attribute
     pub warning: Option<String>,
+    /// In the form of a schema, whether the schema requires the attribute: once, or optional;
+    /// `None` in the form of a document
+    pub occurs: Option<Occurs>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -224,12 +230,14 @@ pub enum Severity {
 ///
 /// When an element has an enumeration child, `method` say, and some of the enumeration's values
 /// name sibling elements, then the value of `method` picks which of those siblings is used. The
-/// one it picks is [`Variant::Selected`] and the others are [`Variant::Unselected`].
+/// one it picks is [`Variant::Selected`] and the others are [`Variant::Unselected`]. In the form of a
+/// schema, which has no values, each is a [`Variant::Alternative`].
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Variant {
     Plain,
     Selected { selector: String },
     Unselected { selector: String, value: String },
+    Alternative { selector: String, value: String },
 }
 
 /// Counts of the problems in a form.
@@ -326,6 +334,27 @@ impl Form {
 }
 
 impl FormNode {
+    /// An element with nothing in it yet: an empty section.
+    pub(crate) fn new(path: Path, name: String, doc: Option<String>) -> FormNode {
+        FormNode {
+            path,
+            name,
+            index: None,
+            doc,
+            kind: NodeKind::Section { children: Vec::new() },
+            attributes: Vec::new(),
+            notes: Vec::new(),
+            variant: Variant::Plain,
+            selector: false,
+            units: None,
+            link: None,
+            linked: None,
+            matrix: None,
+            lists: Vec::new(),
+            occurs: None,
+        }
+    }
+
     /// Whether the element, its value or its attributes have an error.
     pub fn has_error(&self) -> bool {
         self.notes.iter().any(|n| n.severity == Severity::Error)
@@ -407,22 +436,7 @@ impl Builder<'_> {
     fn blank(&self, node: Node, path: Path, doc: Option<String>) -> FormNode {
         let start = node.range().start;
         let name = scan_start_tag(self.src, start).map_or_else(|| node.tag_name().name().to_string(), |tag| self.src[tag.name].to_string());
-        FormNode {
-            path,
-            name,
-            index: None,
-            doc,
-            kind: NodeKind::Section { children: Vec::new() },
-            attributes: Vec::new(),
-            notes: Vec::new(),
-            variant: Variant::Plain,
-            selector: false,
-            units: None,
-            link: None,
-            linked: None,
-            matrix: None,
-            lists: Vec::new(),
-        }
+        FormNode::new(path, name, doc)
     }
 
     /// An element the schema declares.
@@ -538,7 +552,7 @@ impl Builder<'_> {
         number_items(&mut children, |name| {
             counts[name] > 1 || decls.iter().find(|d| d.decl.name == name).is_some_and(|d| d.max.is_none_or(|max| max > 1))
         });
-        mark_variants(&mut children);
+        mark_variants(&mut children, false);
         children
     }
 
@@ -582,6 +596,7 @@ impl Builder<'_> {
                 field: Field::new(value.unwrap_or_default().to_string(), false, false, ty, decl.and_then(|(a, _)| a.fixed.clone())),
                 units: decl.and_then(|(a, _)| a.units.clone()),
                 warning: (declared.is_some() && decl.is_none()).then(|| "Not in the schema".to_string()),
+                occurs: None,
             });
         }
         for (decl, required) in declared.unwrap_or_default() {
@@ -779,8 +794,10 @@ fn new_element(schema: &Schema, decl: &ElementDecl, depth: usize, budget: &mut u
     }
 }
 
-/// Finds a selector among a section's children (see [`Variant`]) and marks the siblings it chooses between.
-fn mark_variants(children: &mut [FormNode]) {
+/// Finds a selector among a section's children (see [`Variant`]) and marks the siblings it chooses
+/// between: by the selector's value, or in the form of a schema, which has no values, `declared`,
+/// each by the value that chooses it.
+pub(crate) fn mark_variants(children: &mut [FormNode], declared: bool) {
     let names: Vec<String> = children.iter().map(|c| c.path.name().to_string()).collect();
     let selector = children.iter().enumerate().find_map(|(i, child)| {
         let NodeKind::Value(field) = &child.kind else {
@@ -805,7 +822,12 @@ fn mark_variants(children: &mut [FormNode]) {
         if j == index || !options.iter().any(|o| o == name) {
             continue;
         }
-        child.variant = if name == value {
+        child.variant = if declared {
+            Variant::Alternative {
+                selector: selector.clone(),
+                value: name.to_string(),
+            }
+        } else if name == value {
             Variant::Selected { selector: selector.clone() }
         } else {
             Variant::Unselected {

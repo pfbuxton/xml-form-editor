@@ -166,7 +166,6 @@ fn value_view(row: ValueRow, ctx: Ctx) -> impl IntoView {
         notes,
         variant,
         unused,
-        selector,
         units,
         change,
         remove,
@@ -189,7 +188,6 @@ fn value_view(row: ValueRow, ctx: Ctx) -> impl IntoView {
                 {remove}
             </div>
             {doc.map(|doc| view! { <div class="doc">{doc_text(doc)}</div> })}
-            {selector.then(|| view! { <div class="doc hint">"Chooses which of the sections below is used."</div> })}
             {editor(ctx, Target::Element(place), field, units, change)}
             {notes_view(notes)}
         </div>
@@ -305,10 +303,6 @@ fn editor(ctx: Ctx, target: Target, field: Field, units: Option<String>, change:
     let widget = widget(&field);
     let current = if field.nil { String::new() } else { field.display_value() };
     let (file_nil, nillable, file_error) = (field.nil, field.nillable, field.error.clone());
-    let chosen_doc = match &widget {
-        Widget::Choice(options) if !file_nil => options.iter().find(|o| o.value == current).and_then(|o| o.doc.clone()),
-        _ => None,
-    };
     let field = StoredValue::new(field);
     let target = StoredValue::new(target);
 
@@ -362,7 +356,6 @@ fn editor(ctx: Ctx, target: Target, field: Field, units: Option<String>, change:
 
     view! {
         <div class="control-line">{control}{units_view(units)}{nil_toggle}</div>
-        {chosen_doc.map(|doc| view! { <div class="option-doc">{doc_text(doc)}</div> })}
         {move || (file_nil && !nil.get()).then(|| view! { <div class="hint">"The file keeps nil until you enter a value."</div> })}
         {move || {
             if touched.get() {

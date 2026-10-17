@@ -489,24 +489,18 @@ a:hover {
 }
 
 .doc {
-  max-width: 76ch;
   margin-top: 2px;
   color: var(--vscode-descriptionForeground, #9d9d9d);
   white-space: pre-line;
 }
 
-.doc.hint,
-.hint {
-  font-style: italic;
-}
-
 .hint {
   margin-top: 4px;
+  font-style: italic;
   color: var(--vscode-descriptionForeground, #9d9d9d);
 }
 
 .option-doc {
-  max-width: 76ch;
   margin-top: 4px;
   color: var(--vscode-descriptionForeground, #9d9d9d);
 }

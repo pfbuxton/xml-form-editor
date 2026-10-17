@@ -9,6 +9,7 @@ use std::collections::HashMap;
 
 use roxmltree::Node;
 
+use crate::identity;
 use crate::schema::{AttributeDecl, ChildDecl, ElementContent, ElementDecl, MAX_DEPTH, Occurs, Schema};
 use crate::simple::SimpleInfo;
 use crate::xml::{Path, XSI_NS, XmlError, attribute_namespace, is_nil, local_name, parse, scan_start_tag, schema_location_of};
@@ -481,6 +482,20 @@ impl Builder<'_> {
         if matches!(out.kind, NodeKind::Section { .. }) {
             out.link = link(&out.attributes);
         }
+        for problem in identity::check(node, &decl.constraints, schema) {
+            let place = path_within(node, &out.path, problem.node).and_then(|path| find_mut(&mut out, &path));
+            let notes = match place {
+                Some(place) => &mut place.notes,
+                None => &mut out.notes,
+            };
+            // The content model says so already
+            let noted = problem
+                .missing
+                .is_some_and(|name| notes.iter().any(|n| n.message.starts_with(&format!("Missing <{name}>"))));
+            if !noted {
+                notes.push(problem.note);
+            }
+        }
         out
     }
 
@@ -608,6 +623,34 @@ impl Builder<'_> {
             }
         }
         out
+    }
+}
+
+/// The path of `target`, an element in `within`, whose path is `path`.
+fn path_within(within: Node, path: &Path, target: Node) -> Option<Path> {
+    let mut chain: Vec<Node> = target.ancestors().take_while(|node| *node != within).collect();
+    if chain.last().and_then(Node::parent) != Some(within) && target != within {
+        return None;
+    }
+    chain.reverse();
+    Some(chain.iter().fold(path.clone(), |path, node| {
+        let name = node.tag_name().name();
+        // The sibling axis starts at the node itself
+        let index = node.prev_siblings().skip(1).filter(|s| s.is_element() && s.tag_name().name() == name).count();
+        path.child(name, index)
+    }))
+}
+
+fn find_mut<'a>(node: &'a mut FormNode, path: &Path) -> Option<&'a mut FormNode> {
+    if node.path == *path {
+        return Some(node);
+    }
+    if !path.steps().starts_with(node.path.steps()) {
+        return None;
+    }
+    match &mut node.kind {
+        NodeKind::Section { children } => children.iter_mut().find_map(|child| find_mut(child, path)),
+        NodeKind::Value(_) => None,
     }
 }
 

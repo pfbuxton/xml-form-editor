@@ -3,14 +3,15 @@
 //! This covers what describes a document's elements and values: global and local elements and
 //! attributes, named and anonymous simple and complex types, restrictions with their facets,
 //! lists, unions, sequences, choices, `xs:all`, model groups, attribute groups, simple content,
-//! and complex content extending another type. Identity constraints, substitution groups and
-//! `xs:include`/`xs:import` are not supported.
+//! complex content extending another type, and identity constraints (see [`crate::identity`]).
+//! Substitution groups and `xs:include`/`xs:import` are not supported.
 
 use std::collections::HashMap;
 use std::fmt;
 
 use roxmltree::Node;
 
+use crate::identity::{IdentityConstraint, Kind};
 use crate::simple::{Bound, Builtin, EnumValue, Facets, SimpleInfo};
 use crate::xml::{local_name, parse};
 
@@ -44,6 +45,9 @@ pub struct Schema {
     groups: HashMap<String, Particle>,
     attribute_groups: HashMap<String, Vec<AttributeItem>>,
     attributes: HashMap<String, AttributeDecl>,
+    /// The keys and unique constraints, wherever they're declared, by name, with the name of the
+    /// element that declares each, for keyrefs to refer to
+    keys: HashMap<String, (String, IdentityConstraint)>,
     warnings: Vec<String>,
 }
 
@@ -55,6 +59,8 @@ pub(crate) struct ElementDecl {
     pub fixed: Option<String>,
     pub doc: Option<String>,
     pub units: Option<String>,
+    /// The keys, unique constraints and keyrefs that hold within the element
+    pub constraints: Vec<IdentityConstraint>,
 }
 
 #[derive(Clone, Debug)]
@@ -235,6 +241,14 @@ impl Schema {
         if schema.elements.is_empty() {
             return Err(SchemaError("The schema declares no global elements".into()));
         }
+        for node in root.descendants().filter(|node| is_xs(*node, "element")) {
+            let holder = node.attribute("name").unwrap_or_default();
+            for constraint in xs_children(node).filter_map(IdentityConstraint::parse) {
+                if !matches!(constraint.kind, Kind::Keyref { .. }) {
+                    schema.keys.insert(constraint.name.clone(), (holder.to_string(), constraint));
+                }
+            }
+        }
         // Those that other elements refer to are usually parts of a document, not its root
         let referenced: Vec<&str> = root
             .descendants()
@@ -262,6 +276,11 @@ impl Schema {
     /// Parts of the schema the form doesn't understand, which leave some values unchecked.
     pub fn warnings(&self) -> &[String] {
         &self.warnings
+    }
+
+    /// The key or unique constraint with this name, with the name of the element that declares it.
+    pub(crate) fn identity_constraint(&self, name: &str) -> Option<(&str, &IdentityConstraint)> {
+        self.keys.get(name).map(|(holder, constraint)| (holder.as_str(), constraint))
     }
 
     pub(crate) fn global_element(&self, name: &str) -> Option<&ElementDecl> {
@@ -553,6 +572,7 @@ fn element_decl(node: Node) -> ElementDecl {
         fixed: node.attribute("fixed").map(str::to_string),
         doc: documentation(node),
         units: units(node),
+        constraints: xs_children(node).filter_map(IdentityConstraint::parse).collect(),
     }
 }
 

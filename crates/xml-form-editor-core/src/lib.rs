@@ -4,6 +4,7 @@
 
 mod edit;
 mod form;
+mod identity;
 mod schema;
 mod schema_form;
 mod simple;

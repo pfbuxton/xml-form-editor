@@ -22,6 +22,8 @@ The form is built from the schema, which the file names in its root element with
   item with the elements and attributes the schema requires.
 - Values are written as you type, as soon as you pause, and picks and checkboxes straight away.
   Values are checked as you type, and invalid values are never written.
+- Keys and unique constraints (`xs:key`, `xs:unique` and `xs:keyref`) are checked: a name used
+  twice is marked on each element that has it, with the others it clashes with.
 - Every setting shows its documentation and units from the schema.
 - Changed values are marked green until you save, then blue. Save is enabled while a file differs
   from what's saved, so editing a value back as it was disables it again. **Cancel** discards the
@@ -57,6 +59,9 @@ same way.
 - Without a schema, the form can't tell that an element is an item of a list unless there's more
   than one of it.
 - The schema must be a local file, and `xs:include`, `xs:import` and `xs:redefine` aren't supported.
+- The form checks values, missing and unexpected elements and attributes, and keys, but not the
+  order of the elements in an `xs:sequence`, nor that only one branch of an `xs:choice` is used.
+  Keys are compared as text, so `1.0` and `1` differ, and each file's are checked on their own.
 - Undo in the form undoes changes to the file you opened, but not those the form holds for a linked
   file: change those back in the form, or discard them with Cancel. VS Code's Save All doesn't save
   them either; the form's Save and Ctrl+S do.

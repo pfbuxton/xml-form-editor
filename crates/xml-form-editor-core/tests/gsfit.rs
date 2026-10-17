@@ -1,19 +1,18 @@
-//! Tests against the GSFit settings in `example_data`: the numerics, the time-slices, and the overall
-//! settings that link to both.
+//! Tests against an earlier version of GSFit's settings, kept in `tests/data`: the numerics, the
+//! time-slices, and the overall settings that link to both.
 
 use xml_form_editor_core::{
     EditOp, Form, FormNode, NodeKind, Occurs, Schema, Severity, TextEdit, Variant, apply_edit, build_form, build_schema_form, is_schema, values,
 };
 
-const XML: &str = include_str!("../../../example_data/numerics.xml");
-const XSD: &str = include_str!("../../../example_data/numerics.xsd");
-const TIME_SLICES_XML: &str = include_str!("../../../example_data/time_slices.xml");
-const TIME_SLICES_XSD: &str = include_str!("../../../example_data/time_slices.xsd");
-const OVERALL_XML: &str = include_str!("../../../example_data/overall_code_settings.xml");
-const OVERALL_XSD: &str = include_str!("../../../example_data/overall_code_settings.xsd");
+const XML: &str = include_str!("data/numerics.xml");
+const XSD: &str = include_str!("data/numerics.xsd");
+const TIME_SLICES_XML: &str = include_str!("data/time_slices.xml");
+const TIME_SLICES_XSD: &str = include_str!("data/time_slices.xsd");
+const OVERALL_XML: &str = include_str!("data/overall_code_settings.xml");
+const OVERALL_XSD: &str = include_str!("data/overall_code_settings.xsd");
 
-/// A time-slices file of its own, to test the lists in, as the one in `example_data` changes as the
-/// form is tried out on it.
+/// A time-slices file of its own, to test the lists in.
 const TIME_SLICES: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 <time_slices xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="time_slices.xsd">
     <method>times</method>
